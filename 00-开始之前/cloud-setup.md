@@ -76,63 +76,54 @@ AutoDL / 阿里云 PAI / 恒源云的控制台都有 JupyterLab，直接把整�
 
 ## 11. 开机器后 10 分钟
 
+每台新实例照抄这一段，四步走完就能开跑。
+
 ```bash
-# 0) 先建虚拟环境，别往 base 里装（理由和两种建法见 11.1）
+# ① 虚拟环境（为什么必须建，见 11.1）
 cd /root/autodl-tmp
 python -m venv --system-site-packages .venv-postrl
 source .venv-postrl/bin/activate
 
-# 1) 国内访问 Hugging Face 的唯一可靠方式：镜像站
+# ② 镜像与缓存（国内直连 huggingface.co 基本必失败）
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_HOME=/root/autodl-tmp/hf          # 系统盘通常只有 30G，模型别放那儿
 
-# 2) 依赖（清华源）
+# ③ 依赖（清华源，装进上面那个 venv）
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U pip
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
-  "trl>=1.16.0" transformers datasets accelerate
-pip install -i https://pypi.tuna.tsinghua.edu.cn/simple trl[vllm] openenv-core
+  "trl>=1.16.0" transformers datasets accelerate trl[vllm] openenv-core
 
-# 3) 三条自检
-python -c "import torch;print(torch.cuda.device_count(), torch.cuda.get_device_name(0))"
+# ④ 自检，三行都要过
+python -c "import torch;print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 python -c "import transformers, trl;print(transformers.__version__, trl.__version__)"
 python -c "from transformers import AutoTokenizer;t=AutoTokenizer.from_pretrained('Qwen/Qwen3-0.6B');print('template ok', len(t.chat_template))"
 ```
 
-第 4 步的 `environment_factory` 要求 `transformers>=5.2.0`，版本不够时单独升：
+第 4 步的 `environment_factory` 要求 `transformers>=5.2.0`，④ 报版本不够时再单独升一行 `pip install -U "transformers>=5.2.0"`。
+
+新终端会丢两样东西（环境和镜像），一次性写进 `~/.bashrc` 就不必每次重敲：
 
 ```bash
-pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U "transformers>=5.2.0"
+echo 'source /root/autodl-tmp/.venv-postrl/bin/activate' >> ~/.bashrc
+echo 'export HF_ENDPOINT=https://hf-mirror.com' >> ~/.bashrc
+echo 'export HF_HOME=/root/autodl-tmp/hf' >> ~/.bashrc
 ```
 
-**把上面四行 export 写进 `~/.bashrc`**，否则每开一个新终端就丢，表现为模型下载报 `ConnectionError` / `Timeout`。
+漏掉第一行的症状是 `pip install` 装进了 base（`which python` 指到 `/usr/bin` 或 conda base），漏掉后两行的症状是模型下载 `ConnectionError` / `Timeout`。
 
-### 11.1 为什么别装在 base 里（以及怎么建环境）
+### 11.1 为什么必须建环境
 
-云上「反正实例用完就删」听起来不需要隔离，但直接 `pip install` 到 base 有三个具体代价：
+1. **`trl[vllm]` 会顺手换掉 torch**。vLLM 对 torch 版本卡得很死，pip 装它时会覆盖镜像里那份预编译的 torch+CUDA，症状是上面 ④ 里 `torch.cuda.is_available()` 变成 `False`，或 NCCL 报 `unhandled cuda error`。真遇到了就**降 vllm 版本去匹配镜像 torch**，别反过来升 torch。
+2. **依赖会打架**：教程要较新的 `transformers`，你别的项目可能锁在旧版本。
+3. **实例一换就没了**，有 venv + `requirements.txt` 才谈得上复现。
 
-1. **`pip install trl[vllm]` 会顺手换掉 torch**。vLLM 对 torch 版本卡得很死，pip 装它时会把你镜像里那份**预编译好的 torch+CUDA** 覆盖成它自己要求的组合，之后最常见的是 `torch not compiled with CUDA enabled` 或 NCCL 初始化报 `unhandled cuda error`。
-2. **同一个实例里跑多个项目会打架**：教程第 4 步要 `transformers>=5.2.0`，别的项目可能锁 4.x。
-3. **实例一换就没了**：无损模式迁移、换区重建都要从头装；有 `requirements.txt` + venv 至少能一条命令复现。
-
-两种建法，按需要二选一：
-
-| 建法 | 命令 | 适合 | 代价 |
-|---|---|---|---|
-| **venv + 复用镜像包**（推荐） | `python -m venv --system-site-packages /root/autodl-tmp/.venv-postrl && source /root/autodl-tmp/.venv-postrl/bin/activate` | 在 AutoDL 上跑教程 | 镜像里那份 torch 仍然可见（省 2GB 下载），但 pip 装 vllm 时仍可能把它替换 → 见下方校验 |
-| **conda 全新建**（最干净） | `conda create -n postrl python=3.11 -y && conda activate postrl` | 同一台机上要跑好几个互斥项目 | 得按镜像的 CUDA 版本重装一份 torch，慢 5–10 分钟 |
-
-建好之后**先验 torch 没被换坏，再装业务依赖**：
+上面用的 `--system-site-packages` 是为了复用镜像里的 torch（省 2GB 下载）；如果你要彻底干净的隔离（同机跑多个互斥项目），换成 conda 新建一个空环境，代价是按镜像的 CUDA 版本重装一份 torch：
 
 ```bash
-python -c "import torch;print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
-# 期望输出类似 2.8.0 12.8 True —— 最后一个是 True 才算真的能用卡
+conda create -n postrl python=3.11 -y && conda activate postrl
 ```
 
-如果装完 `trl[vllm]` 再验变成 `False`，说明 torch 被降/升级了，把 vllm 降到与镜像 torch 匹配的版本，别反过来换 torch。
-
-每次新开终端（比如 tmux 新窗口）记得重新 `source /root/autodl-tmp/.venv-postrl/bin/activate`；嫌麻烦就把这行追加到 `~/.bashrc`。退出环境用 `deactivate`（conda 是 `conda deactivate`）。
-
-> 本地 Windows / macOS 同理：`python -m venv .venv` 然后 `.venv\Scripts\activate`（macOS 是 `source .venv/bin/activate`）。`.venv/` 已经在 `.gitignore` 里，不会误提交。
+本地 Windows / macOS 同理：`python -m venv .venv` 然后 `.venv\Scripts\activate`（macOS 是 `source .venv/bin/activate`）；`.venv/` 已在 `.gitignore` 里。
 
 ### 11.2 AutoDL 学术加速：开与关
 
@@ -146,20 +137,17 @@ source /etc/network_turbo
 unset http_proxy && unset https_proxy
 ```
 
-三点要注意：
+两点要注意：
 
-1. **它是环境变量代理，不是网络设备**：`source` 之后 `env | grep -i proxy` 能看到 `http_proxy` / `https_proxy`；`unset` 之后就恢复直连。
-2. **用完就关**，官方明确说过它会影响正常网络——你紧接着 `pip install` 走清华源、`scp` 传文件时留着它反而变慢甚至失败。
-3. **和 `HF_ENDPOINT` 二选一即可，别叠加使用**。拉模型用镜像（`HF_ENDPOINT=https://hf-mirror.com`）就够了；只有要 `git clone` 这个仓库、或者必须直连 `huggingface.co` 时才 `source /etc/network_turbo`。
+1. **它是环境变量代理**：`source` 之后 `env | grep -i proxy` 能看到 `http_proxy` / `https_proxy`，新终端失效需重新 `source`。
+2. **只在需要 `git clone` 时开，用完就关**：官方说过它会影响正常网络，留着它跑 `pip install`（清华源）或 `scp` 反而变慢甚至失败；拉模型走 ② 的 `HF_ENDPOINT` 镜像就够了，两个别同时开。
 
-如果执行 `source /etc/network_turbo` 报 `No such file or directory`，说明你所在区域不支持该代理，那就走镜像站 + `ghproxy.link`（局域网内通用的 GitHub 代理，地址会变，进站点看当前可用域名）。
+如果执行 `source /etc/network_turbo` 报 `No such file or directory`，说明你所在区域不支持该代理，那就走镜像站 + `ghproxy.link`（地址会变，进站点看当前可用的）。
 
 
 ---
 
 ## 12. 每一步怎么跑
-
-> 下面每条命令都假设你已经 `source` 过 11.1 里那个虚拟环境（新开终端要重新激活），否则用的还是 base 的 python。
 
 ### 12.1 单卡（①～④）
 
