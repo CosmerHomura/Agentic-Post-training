@@ -1,0 +1,3 @@
+{"prompt": [{"role": "user", "content": "计算 23 × 47 的值。先把推理写在 <think></think> 里，再把最终数字写进 <answer></answer>。"}], "ground_truth": "1081"}
+{"prompt": [{"role": "user", "content": "一个长方形的长是 12 厘米，宽是 7 厘米，求它的面积（单位：平方厘米）。把最终数字写进 <answer></answer>。"}], "ground_truth": "84"}
+{"prompt": [{"role": "user", "content": "数列 3, 7, 15, 31, ... 的第 6 项是多少？把最终数字写进 <answer></answer>。"}], "ground_truth": "127"}

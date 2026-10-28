@@ -1,0 +1,3 @@
+{"prompt": [{"role": "system", "content": "你是一个编程 agent。你可以读文件、写文件、跑测试。"}, {"role": "user", "content": "calculator.py 里的测试失败了，请修好它。测试文件是 test_calculator.py。"}]}
+{"prompt": [{"role": "system", "content": "你是一个编程 agent。你可以读文件、写文件、跑测试。"}, {"role": "user", "content": "把 utils.py 里的 to_snake_case 改成能处理连续大写字母，例如 'HTTPServer' -> 'http_server'。"}]}
+{"prompt": [{"role": "system", "content": "你是一个编程 agent。你可以读文件、写文件、跑测试。"}, {"role": "user", "content": "test_parser.py 有 3 个失败的用例，逐个修好，最后运行全部测试确认。"}]}

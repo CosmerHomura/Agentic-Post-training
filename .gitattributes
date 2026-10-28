@@ -1,0 +1,7 @@
+# 统一用 LF：云端 Linux 直接可用，避免 CRLF 反复 diff
+* text=auto eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.zip binary

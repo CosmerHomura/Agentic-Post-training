@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentic 后训练教程 · 从 SFT 到 Harness</title>
+<script>try{if(localStorage.getItem("apc:theme")==="dark"){document.documentElement.dataset.theme="dark"}}catch(e){}</script>
+<style>
+:root{
+  --bg:#f5f4ef; --paper:#fffefb; --ink:#1c2025; --muted:#6b7280; --line:#e5e1d7;
+  --accent:#3f51d6; --accent-soft:#eceefe; --ok:#12703f; --ok-soft:#e7f5ec; --ok-line:#b9e0c6;
+  --code-bg:#f4f2ec; --shadow:0 1px 2px rgba(24,28,40,.05),0 8px 24px -12px rgba(24,28,40,.18);
+  --side:#fbfaf6;
+}
+html[data-theme="dark"]{
+  --bg:#0f1115; --paper:#171a20; --ink:#e7e9ee; --muted:#98a0ad; --line:#282d36;
+  --accent:#8f9dff; --accent-soft:#1d2235; --ok:#5fd39a; --ok-soft:#13251d; --ok-line:#245439;
+  --code-bg:#11141a; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px -18px #000;
+  --side:#12151b;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink);
+  font:16px/1.78 ui-sans-serif,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code,pre,kbd{font-family:ui-monospace,"Cascadia Code","SF Mono",Consolas,"Liberation Mono",monospace}
+
+/* ---------------- layout ---------------- */
+.app{display:grid;grid-template-columns:296px minmax(0,1fr);min-height:100vh}
+aside{
+  position:sticky;top:0;height:100vh;overflow-y:auto;overscroll-behavior:contain;
+  background:var(--side);border-right:1px solid var(--line);padding:20px 16px 28px;
+  display:flex;flex-direction:column;gap:14px;
+}
+aside::-webkit-scrollbar{width:8px}
+aside::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}
+.brand{display:flex;gap:10px;align-items:center;padding:2px 6px 0}
+.brand .logo{
+  width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;
+  background:linear-gradient(145deg,var(--accent),#7c3aed);color:#fff;font-weight:700;font-size:15px;
+  box-shadow:0 4px 12px -6px var(--accent);
+}
+.brand h1{font-size:15px;margin:0;letter-spacing:.2px}
+.brand p{margin:2px 0 0;font-size:11.5px;color:var(--muted);letter-spacing:.3px}
+
+.searchbox{position:relative}
+.searchbox input{
+  width:100%;padding:9px 12px 9px 32px;border-radius:9px;border:1px solid var(--line);
+  background:var(--paper);color:var(--ink);font-size:13.5px;outline:none;
+}
+.searchbox input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.searchbox .icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px}
+.qres{
+  max-height:300px;overflow:auto;background:var(--paper);border:1px solid var(--line);
+  border-radius:10px;padding:4px;box-shadow:var(--shadow);margin-top:-6px;
+}
+.qres a{display:block;padding:7px 9px;border-radius:7px;color:var(--ink);font-size:13px}
+.qres a:hover{background:var(--accent-soft);text-decoration:none}
+.qres small{color:var(--muted);margin-right:6px;font-size:11px}
+.qres .empty{color:var(--muted);font-size:12.5px;padding:8px 10px}
+
+.progress{padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}
+.progress .row{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:7px}
+.progress .row b{color:var(--ink);font-variant-numeric:tabular-nums}
+.bar{height:6px;border-radius:99px;background:var(--line);overflow:hidden}
+.bar i{display:block;height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--ok),#4ec98a);transition:width .35s ease}
+
+nav.toc{display:flex;flex-direction:column;gap:2px}
+.ch{--pad:0}
+.ch>a.chl{
+  display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:8px;color:var(--ink);
+  font-size:13.5px;font-weight:600;line-height:1.35;position:relative;
+}
+.ch>a.chl:hover{background:var(--accent-soft);text-decoration:none}
+.ch>a.chl .num{
+  flex:none;min-width:26px;height:20px;padding:0 5px;border-radius:5px;background:var(--line);
+  color:var(--muted);font-size:11px;font-weight:700;display:grid;place-items:center;letter-spacing:.4px;
+  font-variant-numeric:tabular-nums;
+}
+.ch.act>a.chl{background:var(--accent-soft);color:var(--accent)}
+.ch.act>a.chl .num{background:var(--accent);color:#fff}
+.ch>a.chl .ct{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ch>a.chl .pct{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums;font-weight:500}
+.ch.done>a.chl .pct{color:var(--ok)}
+.secs{display:none;margin:2px 0 8px 22px;border-left:1px solid var(--line);padding-left:9px}
+.ch.act .secs,.ch.open .secs{display:block}
+a.sl{
+  display:flex;gap:8px;align-items:flex-start;padding:5px 8px;border-radius:6px;
+  color:var(--muted);font-size:12.5px;line-height:1.5;
+}
+a.sl:hover{background:var(--accent-soft);color:var(--ink);text-decoration:none}
+a.sl.act{color:var(--accent);font-weight:600}
+a.sl .box{
+  flex:none;width:13px;height:13px;margin-top:3px;border:1.5px solid var(--line);border-radius:4px;
+  display:grid;place-items:center;font-size:9px;color:transparent;line-height:1;background:var(--paper);
+}
+a.sl.done .box{background:var(--ok);border-color:var(--ok);color:#fff}
+a.sl.done{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--line)}
+a.sl.act.done{color:var(--accent)}
+
+.sidefoot{margin-top:auto;display:flex;flex-wrap:wrap;gap:6px;padding-top:10px;border-top:1px dashed var(--line)}
+.sidefoot button{
+  flex:1 1 auto;padding:7px 9px;border-radius:7px;border:1px solid var(--line);background:var(--paper);
+  color:var(--muted);font-size:12px;cursor:pointer;font-family:inherit;
+}
+.sidefoot button:hover{color:var(--ink);border-color:var(--accent)}
+.tip{font-size:11px;color:var(--muted);line-height:1.6;padding:0 2px}
+
+/* ---------------- main ---------------- */
+main{min-width:0;display:flex;flex-direction:column}
+.topbar{
+  position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;
+  padding:10px 28px;background:var(--bg);
+  background:color-mix(in srgb,var(--bg) 86%,transparent);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--line);
+}
+.topbar .crumb{font-size:12.5px;color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar .crumb b{color:var(--ink);font-weight:600}
+.tbtn{
+  padding:6px 11px;border-radius:7px;border:1px solid var(--line);background:var(--paper);
+  color:var(--ink);font-size:12.5px;cursor:pointer;font-family:inherit;white-space:nowrap;
+}
+.tbtn:hover{border-color:var(--accent);color:var(--accent)}
+.tbtn:disabled{opacity:.4;cursor:default}
+.tbtn:disabled:hover{border-color:var(--line);color:var(--ink)}
+
+article{width:100%;max-width:900px;margin:0 auto;padding:34px 32px 80px}
+.chead{margin:0 0 26px}
+.chead .kicker{font-size:12px;letter-spacing:1.4px;text-transform:uppercase;color:var(--accent);font-weight:700}
+.chead h1{font-size:31px;line-height:1.3;margin:8px 0 8px;letter-spacing:-.3px}
+.chead .sub{color:var(--muted);font-size:14.5px;margin:0}
+.chead .meta{display:flex;gap:14px;align-items:center;margin-top:16px;flex-wrap:wrap}
+.chead .meta .m{font-size:12.5px;color:var(--muted)}
+.chead .meta .bar{width:150px;flex:none}
+
+.sec{
+  background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:26px 30px 28px;
+  margin:0 0 18px;box-shadow:var(--shadow);scroll-margin-top:74px;position:relative;
+}
+.sec.done{border-color:var(--ok-line)}
+.sec.done::after{
+  content:"已学";position:absolute;top:0;right:0;font-size:11px;color:var(--ok);
+  background:var(--ok-soft);border-bottom-left-radius:10px;padding:3px 10px;letter-spacing:.5px;
+}
+.sechead{display:flex;align-items:flex-start;gap:14px;margin:0 0 14px}
+.sechead h2{flex:1;font-size:20px;line-height:1.45;margin:0;letter-spacing:-.2px}
+.sechead h2 .anchor{opacity:0;margin-left:6px;font-weight:400;color:var(--muted);font-size:15px}
+.sechead:hover h2 .anchor{opacity:1}
+.mark{
+  flex:none;display:inline-flex;gap:6px;align-items:center;padding:5px 11px;border-radius:999px;
+  border:1px solid var(--line);background:var(--paper);color:var(--muted);font-size:12px;cursor:pointer;
+  font-family:inherit;margin-top:2px;
+}
+.mark .dot{width:13px;height:13px;border-radius:4px;border:1.5px solid var(--line);display:grid;place-items:center;font-size:9px;color:transparent}
+.mark:hover{border-color:var(--ok);color:var(--ok)}
+.mark[aria-pressed="true"]{background:var(--ok-soft);border-color:var(--ok-line);color:var(--ok)}
+.mark[aria-pressed="true"] .dot{background:var(--ok);border-color:var(--ok);color:#fff}
+
+.sec p{margin:0 0 14px}
+.sec>*:last-child{margin-bottom:0}
+.sec h3{font-size:16.5px;margin:26px 0 10px;letter-spacing:-.1px}
+.sec h3:first-child{margin-top:0}
+.sec h4{font-size:14.5px;margin:20px 0 8px;color:var(--muted)}
+.sec ul,.sec ol{margin:0 0 14px;padding-left:22px}
+.sec li{margin:5px 0}
+.sec li::marker{color:var(--muted)}
+.sec li.task{list-style:none;position:relative;padding-left:24px;margin:7px 0}
+.sec li.task::before{content:"";position:absolute;left:1px;top:.42em;width:13px;height:13px;border:1.5px solid var(--line2);border-radius:4px;background:var(--card)}
+.sec li.task.done::before{background:var(--ok);border-color:var(--ok)}
+.sec strong{font-weight:650}
+.sec hr{border:none;border-top:1px dashed var(--line);margin:22px 0}
+.sec blockquote{
+  margin:0 0 16px;padding:4px 0 4px 18px;border-left:3px solid var(--accent);
+  color:var(--ink);background:linear-gradient(90deg,var(--accent-soft),transparent 70%);
+  border-radius:0 8px 8px 0;
+}
+.sec blockquote p:last-child{margin-bottom:0}
+.sec code{background:var(--code-bg);padding:.15em .38em;border-radius:5px;font-size:.9em;border:1px solid var(--line)}
+.codewrap{
+  margin:0 0 16px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--code-bg);
+}
+.codewrap pre{margin:0;padding:14px 16px;overflow-x:auto;font-size:12.9px;line-height:1.65}
+.codewrap code{background:none;border:none;padding:0;font-size:inherit}
+.tablewrap{overflow-x:auto;margin:0 0 16px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}
+table{border-collapse:collapse;width:100%;font-size:13.6px;line-height:1.6}
+th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:var(--bg);background:color-mix(in srgb,var(--bg) 60%,var(--paper));font-weight:650;font-size:12.8px;letter-spacing:.2px;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+tbody tr:hover{background:var(--accent-soft);background:color-mix(in srgb,var(--accent-soft) 45%,transparent)}
+td code,th code{white-space:normal;overflow-wrap:anywhere}
+
+.pager{display:flex;gap:12px;margin-top:26px}
+.pager a{
+  flex:1;display:flex;flex-direction:column;gap:3px;padding:14px 18px;border:1px solid var(--line);
+  border-radius:12px;background:var(--paper);color:var(--ink);box-shadow:var(--shadow);
+}
+.pager a:hover{border-color:var(--accent);text-decoration:none;transform:translateY(-1px)}
+.pager a small{color:var(--muted);font-size:11.5px}
+.pager a b{font-size:14px}
+.pager a.next{text-align:right;align-items:flex-end}
+.pager a.ghost{visibility:hidden}
+
+footer.ft{max-width:900px;margin:0 auto;padding:0 32px 60px;color:var(--muted);font-size:12.5px;line-height:1.8}
+footer.ft kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;background:var(--paper)}
+
+#up{
+  position:fixed;right:22px;bottom:22px;width:40px;height:40px;border-radius:50%;border:1px solid var(--line);
+  background:var(--paper);color:var(--muted);font-size:15px;cursor:pointer;box-shadow:var(--shadow);
+  opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;transform:translateY(6px);
+}
+#up.on{opacity:1;pointer-events:auto;transform:none}
+#up:hover{color:var(--accent);border-color:var(--accent)}
+
+#burger{display:none}
+#scrim{display:none;position:fixed;inset:0;background:rgba(12,14,18,.42);z-index:55;backdrop-filter:blur(1px)}
+body.nav-open #scrim{display:block}
+body.nav-open #burger{position:relative;z-index:57}
+@media (max-width:980px){
+  .app{grid-template-columns:minmax(0,1fr)}
+  aside{position:fixed;z-index:60;width:290px;transform:translateX(-100%);transition:transform .22s ease;box-shadow:var(--shadow)}
+  body.nav-open aside{transform:none}
+  #burger{display:inline-block}
+  article{padding:24px 16px 70px}
+  .topbar{padding:9px 14px;gap:8px}
+  .crumb{font-size:12px}
+  .sec{padding:20px 18px 22px;border-radius:12px}
+  .chead h1{font-size:25px;letter-spacing:-.2px}
+  .sechead{gap:10px}
+  .mark{padding:4px 9px}
+}
+@media print{
+  aside,.topbar,.pager,#up,.mark{display:none!important}
+  .app{display:block}
+  .sec{box-shadow:none;break-inside:avoid;border-color:#ddd}
+  body{background:#fff}
+}
+</style>
+</head>
+<body>
+<div id="scrim"></div>
+<div class="app">
+  <aside id="side">
+    <div class="brand">
+      <div class="logo">A↑</div>
+      <div>
+        <h1>Agentic 后训练教程</h1>
+        <p>SFT → 蒸馏 → GRPO → 环境 → Harness</p>
+      </div>
+    </div>
+
+    <div class="searchbox">
+      <span class="icon">⌕</span>
+      <input id="q" type="search" placeholder="搜索小节…（/）" autocomplete="off" spellcheck="false">
+    </div>
+    <div id="qres" class="qres" hidden></div>
+
+    <div class="progress">
+      <div class="row"><span>学习进度</span><b id="ptext">0 / 0</b></div>
+      <div class="bar"><i id="pfill"></i></div>
+    </div>
+
+    <nav class="toc" id="toc"></nav>
+
+    <div class="sidefoot">
+      <button id="theme" type="button">深色模式</button>
+      <button id="expand" type="button">展开目录</button>
+      <button id="reset" type="button">重置进度</button>
+    </div>
+    <div class="tip">勾选右侧「已学」即记在本机浏览器里；页面可加书签，链接会带你回到具体小节。</div>
+  </aside>
+
+  <main>
+    <div class="topbar">
+      <button class="tbtn" id="burger" type="button" aria-label="目录">☰ 目录</button>
+      <div class="crumb" id="crumb"></div>
+      <button class="tbtn" id="prev" type="button">← 上一章</button>
+      <button class="tbtn" id="next" type="button">下一章 →</button>
+    </div>
+    <article id="doc"></article>
+    <footer class="ft">
+      快捷键：<kbd>←</kbd> <kbd>→</kbd> 切换章节 · <kbd>/</kbd> 搜索 · <kbd>Esc</kbd> 关闭搜索。
+      进度保存在当前浏览器（localStorage），换浏览器或清理数据会重置。
+    </footer>
+  </main>
+</div>
+
+<button id="up" type="button" aria-label="回到顶部">↑</button>
+
+<script>
+const DATA = /*__DATA__*/[];
+const TOTAL = __TOTAL__;
+
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem('apc:' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('apc:' + k, JSON.stringify(v)); } catch (e) {} }
+};
+
+let done = LS.get('done', {}) || {};
+let last = LS.get('last', 'ch0');
+let theme = LS.get('theme', 'light');
+
+const key = (c, s) => c + '/' + s;
+const isDone = (c, s) => !!done[key(c, s)];
+const chDone = c => c.sections.filter(s => done[key(c.id, s.id)]).length;
+const chPct = c => c.sections.length ? Math.round(chDone(c) * 100 / c.sections.length) : 0;
+
+const chapterById = id => DATA.find(c => c.id === id) || DATA[0];
+
+/* ---------------- sidebar ---------------- */
+function drawToc() {
+  const html = DATA.map((c, i) => {
+    const p = chPct(c);
+    const secs = c.sections.map(s => {
+      const d = isDone(c.id, s.id);
+      return `<a class="sl${d ? ' done' : ''}" href="#/${c.id}/${s.id}" data-ch="${c.id}" data-sec="${s.id}">
+        <i class="box">✓</i><span>${esc(s.short)}</span></a>`;
+    }).join('');
+    return `<div class="ch" data-ch="${c.id}" id="toc-${c.id}">
+      <a class="chl" href="#/${c.id}">
+        <span class="num">${esc(c.num)}</span>
+        <span class="ct">${esc(shortTitle(c))}</span>
+        <span class="pct">${p}%</span>
+      </a>
+      <div class="secs">${secs}</div>
+    </div>`;
+  }).join('');
+  $('#toc').innerHTML = html;
+  refreshToc();
+}
+
+function shortTitle(c) {
+  return c.title.replace(/^\d+\s*·\s*/, '').replace(/（.*?）$/, m => m);
+}
+
+function refreshToc() {
+  DATA.forEach(c => {
+    const el = $('#toc-' + c.id);
+    if (!el) return;
+    el.querySelector('.pct').textContent = chPct(c) + '%';
+    el.classList.toggle('done', chPct(c) === 100);
+    c.sections.forEach(s => {
+      const a = el.querySelector(`a.sl[data-sec="${s.id}"]`);
+      if (a) a.classList.toggle('done', isDone(c.id, s.id));
+    });
+  });
+  const d = DATA.reduce((n, c) => n + chDone(c), 0);
+  $('#ptext').textContent = d + ' / ' + TOTAL;
+  $('#pfill').style.width = (TOTAL ? d * 100 / TOTAL : 0) + '%';
+}
+
+/* ---------------- routing ---------------- */
+function parseHash() {
+  const h = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+  const [ch, sec] = h.split('/');
+  return { ch: ch || last, sec: sec || '' };
+}
+function go(ch, sec) {
+  const t = '#/' + ch + (sec ? '/' + sec : '');
+  if (location.hash === t) paint(); else location.hash = t;
+}
+
+/* ---------------- render ---------------- */
+let current = null;
+
+function paint(scrollTo) {
+  const r = parseHash();
+  const c = chapterById(r.ch);
+  current = c;
+  const i = DATA.indexOf(c);
+
+  $('#crumb').innerHTML = `<b>${esc(c.title)}</b>${r.sec ? ' · ' + esc((c.sections.find(s => s.id === r.sec) || {}).short || '') : ''}`;
+
+  const p = chPct(c);
+  const kicker = c.id === 'ch0' ? '总目录' : (c.num === '99' ? '附录' : 'Step ' + c.num);
+  const head = `<header class="chead">
+    <div class="kicker">${kicker}</div>
+    <h1>${esc(c.heading || c.title)}</h1>
+    ${c.subtitle ? `<p class="sub">${esc(c.subtitle)}</p>` : ''}
+    <div class="meta">
+      <span class="m">${c.sections.length} 节 · 已学 ${chDone(c)} 节</span>
+      <div class="bar"><i style="width:${p}%"></i></div>
+      <span class="m">${p}%</span>
+      <button class="tbtn" id="markall" type="button">${p === 100 ? '清除本章标记' : '整章标记已学'}</button>
+    </div>
+  </header>`;
+
+  const secs = c.sections.map(s => {
+    const d = isDone(c.id, s.id);
+    return `<section class="sec${d ? ' done' : ''}" id="sec-${c.id}-${s.id}" data-ch="${c.id}" data-sec="${s.id}">
+      <div class="sechead">
+        <h2>${esc(s.title)}<a class="anchor" href="#/${c.id}/${s.id}" title="复制此小节的链接">¶</a></h2>
+        <button class="mark" type="button" aria-pressed="${d}" data-ch="${c.id}" data-sec="${s.id}">
+          <i class="dot">✓</i><span>${d ? '已学' : '标记已学'}</span>
+        </button>
+      </div>
+      ${s.html}
+    </section>`;
+  }).join('');
+
+  const prev = DATA[i - 1], next = DATA[i + 1];
+  const pager = `<div class="pager">
+    ${prev ? `<a class="prev" href="#/${prev.id}"><small>← 上一章</small><b>${esc(prev.title)}</b></a>` : `<a class="ghost"></a>`}
+    ${next ? `<a class="next" href="#/${next.id}"><small>下一章 →</small><b>${esc(next.title)}</b></a>` : `<a class="ghost"></a>`}
+  </div>`;
+
+  $('#doc').innerHTML = head + secs + pager;
+
+  $('#prev').disabled = !prev;
+  $('#next').disabled = !next;
+  $('#prev').onclick = () => prev && go(prev.id);
+  $('#next').onclick = () => next && go(next.id);
+
+  $$('.ch').forEach(el => el.classList.toggle('act', el.dataset.ch === c.id));
+  $$('a.sl').forEach(el => el.classList.toggle('act', el.dataset.ch === c.id && el.dataset.sec === r.sec));
+  if (window.innerWidth <= 980) document.body.classList.remove('nav-open');
+
+  last = c.id; LS.set('last', c.id);
+  refreshToc();
+  document.title = c.title + ' · Agentic 后训练教程';
+
+  if (scrollTo) {
+    if (r.sec) {
+      const el = document.getElementById('sec-' + c.id + '-' + r.sec);
+      if (el) {
+        const y = el.getBoundingClientRect().top + window.scrollY - 66;
+        window.scrollTo(0, Math.max(0, y));
+      }
+    } else {
+      window.scrollTo({ top: 0 });
+    }
+  }
+}
+
+/* ---------------- actions ---------------- */
+function toggle(cid, sid) {
+  const k = key(cid, sid);
+  if (done[k]) delete done[k]; else done[k] = 1;
+  LS.set('done', done);
+  const sec = document.getElementById('sec-' + cid + '-' + sid);
+  const b = document.querySelector(`.mark[data-ch="${cid}"][data-sec="${sid}"]`);
+  if (sec) sec.classList.toggle('done', !!done[k]);
+  if (b) {
+    b.setAttribute('aria-pressed', done[k] ? 'true' : 'false');
+    b.querySelector('span').textContent = done[k] ? '已学' : '标记已学';
+  }
+  refreshToc();
+  const c = chapterById(cid);
+  const p = chPct(c);
+  const m = $('#doc .meta');
+  if (m && current && current.id === cid) {
+    m.querySelector('.bar i').style.width = p + '%';
+    m.querySelectorAll('.m')[1].textContent = p + '%';
+    m.querySelectorAll('.m')[0].textContent = `${c.sections.length} 节 · 已学 ${chDone(c)} 节`;
+    $('#markall').textContent = p === 100 ? '清除本章标记' : '整章标记已学';
+  }
+}
+
+document.addEventListener('click', e => {
+  const mk = e.target.closest('.mark');
+  if (mk) { e.preventDefault(); toggle(mk.dataset.ch, mk.dataset.sec); return; }
+  const ma = e.target.closest('#markall');
+  if (ma) {
+    const c = current, all = chPct(c) === 100;
+    c.sections.forEach(s => { if (all) delete done[key(c.id, s.id)]; else done[key(c.id, s.id)] = 1; });
+    LS.set('done', done);
+    const y = window.scrollY;
+    paint(false);
+    window.scrollTo(0, y);
+    return;
+  }
+  const an = e.target.closest('.anchor');
+  if (an) { e.preventDefault(); history.replaceState(null, '', an.getAttribute('href')); copy(location.href); an.textContent = '✓'; setTimeout(() => an.textContent = '¶', 1200); }
+});
+
+function copy(t) {
+  try { navigator.clipboard.writeText(t); } catch (e) {}
+}
+
+/* ---------------- search ---------------- */
+const q = $('#q'), qres = $('#qres');
+function search() {
+  const v = q.value.trim().toLowerCase();
+  if (!v) { qres.hidden = true; qres.innerHTML = ''; return; }
+  const hits = [];
+  DATA.forEach(c => {
+    if (c.title.toLowerCase().includes(v)) hits.push({ c, s: null });
+    c.sections.forEach(s => {
+      if ((s.short + ' ' + s.title).toLowerCase().includes(v)) hits.push({ c, s });
+    });
+  });
+  qres.innerHTML = hits.length
+    ? hits.slice(0, 24).map(h => `<a href="#/${h.c.id}${h.s ? '/' + h.s.id : ''}"><small>${esc(h.c.num)}</small>${esc(h.s ? h.s.short : h.c.title)}</a>`).join('')
+    : '<div class="empty">没有匹配的小节</div>';
+  qres.hidden = false;
+}
+q.addEventListener('input', search);
+q.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { const a = qres.querySelector('a'); if (a) { location.hash = a.getAttribute('href'); qres.hidden = true; q.blur(); } }
+  if (e.key === 'Escape') { q.value = ''; search(); q.blur(); }
+});
+
+/* ---------------- misc ---------------- */
+$('#theme').onclick = () => {
+  theme = theme === 'dark' ? 'light' : 'dark';
+  LS.set('theme', theme);
+  document.documentElement.dataset.theme = theme;
+  $('#theme').textContent = theme === 'dark' ? '浅色模式' : '深色模式';
+};
+$('#expand').onclick = () => {
+  const on = $('#expand').dataset.on !== '1';
+  $('#expand').dataset.on = on ? '1' : '0';
+  $$('.ch').forEach(el => el.classList.toggle('open', on));
+  $('#expand').textContent = on ? '收起目录' : '展开目录';
+};
+$('#reset').onclick = () => {
+  if (!confirm('确定清空所有「已学」标记？')) return;
+  done = {}; LS.set('done', done); paint(false);
+};
+$('#burger').onclick = () => document.body.classList.toggle('nav-open');
+$('#scrim').onclick = () => document.body.classList.remove('nav-open');
+$('#up').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+
+window.addEventListener('scroll', () => {
+  $('#up').classList.toggle('on', window.scrollY > 600);
+});
+window.addEventListener('hashchange', () => paint(true));
+document.addEventListener('keydown', e => {
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+  if (e.key === '/') { e.preventDefault(); q.focus(); return; }
+  if (e.key === 'Escape') { document.body.classList.remove('nav-open'); return; }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    const i = DATA.indexOf(current);
+    const t = DATA[i + (e.key === 'ArrowRight' ? 1 : -1)];
+    if (t) go(t.id);
+  }
+});
+
+/* ---------------- boot ---------------- */
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+}
+document.documentElement.dataset.theme = theme;
+$('#theme').textContent = theme === 'dark' ? '浅色模式' : '深色模式';
+if (!location.hash) history.replaceState(null, '', '#/' + (chapterById(last).id));
+drawToc();
+paint(true);
+</script>
+</body>
+</html>
