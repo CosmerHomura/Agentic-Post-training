@@ -68,7 +68,9 @@ AutoDL / 阿里云 PAI / 恒源云的控制台都有 JupyterLab，直接把整�
 
 `ckpt/`（几百 MB 到几十 GB）、`.venv/`、`__pycache__/`、模型缓存、`_site/_preview.html` 这类临时件。工作区根目录已经放了 `.gitignore`，覆盖这些。
 
-> 仓库真正的体积只有约 400KB —— 8 个 README + 16 个示例文件 + 一个 148KB 的单文件网页。所以 `index.html` 也一起提交：推到 GitHub 后开 **Settings → Pages → Deploy from branch / root**，就能在任何设备上打开这份教程（手机上也能勾选，进度存在各自的浏览器里）。
+> 仓库真正的体积只有约 400KB —— 8 个 README + 16 个示例文件 + 一个 148KB 的单文件网页。`index.html` 一起提交，但不依赖任何托管服务：想要网页版的人自己下载 `index.html`，双击就能看，不需要服务器、不需要联网。
+>
+> 学习进度（打勾）存在各自浏览器的 localStorage 里，**天然按人分开**：你把 `index.html` 发给十个人，十个人各自记各自的进度，互不影响，也不需要账号。想重来就点页面左下角「重置进度」。
 
 ---
 
