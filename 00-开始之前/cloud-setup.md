@@ -101,6 +101,27 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U "transformers>=5.2.0"
 
 **把上面四行 export 写进 `~/.bashrc`**，否则每开一个新终端就丢，表现为模型下载报 `ConnectionError` / `Timeout`。
 
+### 11.1 AutoDL 学术加速：开与关
+
+AutoDL 的「学术加速」是一个只会对 **github.com / githubusercontent.com / githubassets.com / huggingface.co** 生效的代理，用来解决 `git clone` 和直连 HF 慢的问题。
+
+```bash
+# 开（只对当前这个终端有效，新开终端要重新执行）
+source /etc/network_turbo
+
+# 关
+unset http_proxy && unset https_proxy
+```
+
+三点要注意：
+
+1. **它是环境变量代理，不是网络设备**：`source` 之后 `env | grep -i proxy` 能看到 `http_proxy` / `https_proxy`；`unset` 之后就恢复直连。
+2. **用完就关**，官方明确说过它会影响正常网络——你紧接着 `pip install` 走清华源、`scp` 传文件时留着它反而变慢甚至失败。
+3. **和 `HF_ENDPOINT` 二选一即可，别叠加使用**。拉模型用镜像（`HF_ENDPOINT=https://hf-mirror.com`）就够了；只有要 `git clone` 这个仓库、或者必须直连 `huggingface.co` 时才 `source /etc/network_turbo`。
+
+如果执行 `source /etc/network_turbo` 报 `No such file or directory`，说明你所在区域不支持该代理，那就走镜像站 + `ghproxy.link`（局域网内通用的 GitHub 代理，地址会变，进站点看当前可用域名）。
+
+
 ---
 
 ## 12. 每一步怎么跑
