@@ -79,16 +79,15 @@ AutoDL / 阿里云 PAI / 恒源云的控制台都有 JupyterLab，直接把整�
 每台新实例照抄这一段，四步走完就能开跑。
 
 ```bash
-# ① 虚拟环境（为什么必须建，见 11.1）
-cd /root/autodl-tmp
-python -m venv --system-site-packages .venv-postrl
-source .venv-postrl/bin/activate
+# ① conda 环境（为什么必须建，见 11.1）
+conda create -n postrl python=3.11 -y
+conda activate postrl
 
 # ② 镜像与缓存（国内直连 huggingface.co 基本必失败）
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_HOME=/root/autodl-tmp/hf          # 系统盘通常只有 30G，模型别放那儿
 
-# ③ 依赖（清华源，装进上面那个 venv）
+# ③ 依赖（清华源，装进 postrl 环境）
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U pip
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
   "trl>=1.16.0" transformers datasets accelerate trl[vllm] openenv-core
@@ -104,7 +103,7 @@ python -c "from transformers import AutoTokenizer;t=AutoTokenizer.from_pretraine
 新终端会丢两样东西（环境和镜像），一次性写进 `~/.bashrc` 就不必每次重敲：
 
 ```bash
-echo 'source /root/autodl-tmp/.venv-postrl/bin/activate' >> ~/.bashrc
+echo 'source /root/miniconda3/etc/profile.d/conda.sh && conda activate postrl' >> ~/.bashrc
 echo 'export HF_ENDPOINT=https://hf-mirror.com' >> ~/.bashrc
 echo 'export HF_HOME=/root/autodl-tmp/hf' >> ~/.bashrc
 ```
@@ -115,15 +114,11 @@ echo 'export HF_HOME=/root/autodl-tmp/hf' >> ~/.bashrc
 
 1. **`trl[vllm]` 会顺手换掉 torch**。vLLM 对 torch 版本卡得很死，pip 装它时会覆盖镜像里那份预编译的 torch+CUDA，症状是上面 ④ 里 `torch.cuda.is_available()` 变成 `False`，或 NCCL 报 `unhandled cuda error`。真遇到了就**降 vllm 版本去匹配镜像 torch**，别反过来升 torch。
 2. **依赖会打架**：教程要较新的 `transformers`，你别的项目可能锁在旧版本。
-3. **实例一换就没了**，有 venv + `requirements.txt` 才谈得上复现。
+3. **实例一换就没了**，有 conda 环境 + `requirements.txt`（`pip freeze > requirements.txt`）才谈得上复现。
 
-上面用的 `--system-site-packages` 是为了复用镜像里的 torch（省 2GB 下载）；如果你要彻底干净的隔离（同机跑多个互斥项目），换成 conda 新建一个空环境，代价是按镜像的 CUDA 版本重装一份 torch：
+conda 建的是空环境，torch 要按镜像的 CUDA 版本重装一份（`pip install torch --index-url https://download.pytorch.org/whl/cu121` 之类），代价是几 GB 下载；好处是完全隔离，同机跑多个互斥项目也不打架。
 
-```bash
-conda create -n postrl python=3.11 -y && conda activate postrl
-```
-
-本地 Windows / macOS 同理：`python -m venv .venv` 然后 `.venv\Scripts\activate`（macOS 是 `source .venv/bin/activate`）；`.venv/` 已在 `.gitignore` 里。
+本地 Windows / macOS 同样用 conda：`conda create -n postrl python=3.11 -y && conda activate postrl`。
 
 ### 11.2 AutoDL 学术加速：开与关
 
