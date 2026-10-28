@@ -77,6 +77,11 @@ AutoDL / 阿里云 PAI / 恒源云的控制台都有 JupyterLab，直接把整�
 ## 11. 开机器后 10 分钟
 
 ```bash
+# 0) 先建虚拟环境，别往 base 里装（理由和两种建法见 11.1）
+cd /root/autodl-tmp
+python -m venv --system-site-packages .venv-postrl
+source .venv-postrl/bin/activate
+
 # 1) 国内访问 Hugging Face 的唯一可靠方式：镜像站
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_HOME=/root/autodl-tmp/hf          # 系统盘通常只有 30G，模型别放那儿
@@ -101,7 +106,35 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U "transformers>=5.2.0"
 
 **把上面四行 export 写进 `~/.bashrc`**，否则每开一个新终端就丢，表现为模型下载报 `ConnectionError` / `Timeout`。
 
-### 11.1 AutoDL 学术加速：开与关
+### 11.1 为什么别装在 base 里（以及怎么建环境）
+
+云上「反正实例用完就删」听起来不需要隔离，但直接 `pip install` 到 base 有三个具体代价：
+
+1. **`pip install trl[vllm]` 会顺手换掉 torch**。vLLM 对 torch 版本卡得很死，pip 装它时会把你镜像里那份**预编译好的 torch+CUDA** 覆盖成它自己要求的组合，之后最常见的是 `torch not compiled with CUDA enabled` 或 NCCL 初始化报 `unhandled cuda error`。
+2. **同一个实例里跑多个项目会打架**：教程第 4 步要 `transformers>=5.2.0`，别的项目可能锁 4.x。
+3. **实例一换就没了**：无损模式迁移、换区重建都要从头装；有 `requirements.txt` + venv 至少能一条命令复现。
+
+两种建法，按需要二选一：
+
+| 建法 | 命令 | 适合 | 代价 |
+|---|---|---|---|
+| **venv + 复用镜像包**（推荐） | `python -m venv --system-site-packages /root/autodl-tmp/.venv-postrl && source /root/autodl-tmp/.venv-postrl/bin/activate` | 在 AutoDL 上跑教程 | 镜像里那份 torch 仍然可见（省 2GB 下载），但 pip 装 vllm 时仍可能把它替换 → 见下方校验 |
+| **conda 全新建**（最干净） | `conda create -n postrl python=3.11 -y && conda activate postrl` | 同一台机上要跑好几个互斥项目 | 得按镜像的 CUDA 版本重装一份 torch，慢 5–10 分钟 |
+
+建好之后**先验 torch 没被换坏，再装业务依赖**：
+
+```bash
+python -c "import torch;print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+# 期望输出类似 2.8.0 12.8 True —— 最后一个是 True 才算真的能用卡
+```
+
+如果装完 `trl[vllm]` 再验变成 `False`，说明 torch 被降/升级了，把 vllm 降到与镜像 torch 匹配的版本，别反过来换 torch。
+
+每次新开终端（比如 tmux 新窗口）记得重新 `source /root/autodl-tmp/.venv-postrl/bin/activate`；嫌麻烦就把这行追加到 `~/.bashrc`。退出环境用 `deactivate`（conda 是 `conda deactivate`）。
+
+> 本地 Windows / macOS 同理：`python -m venv .venv` 然后 `.venv\Scripts\activate`（macOS 是 `source .venv/bin/activate`）。`.venv/` 已经在 `.gitignore` 里，不会误提交。
+
+### 11.2 AutoDL 学术加速：开与关
 
 AutoDL 的「学术加速」是一个只会对 **github.com / githubusercontent.com / githubassets.com / huggingface.co** 生效的代理，用来解决 `git clone` 和直连 HF 慢的问题。
 
@@ -125,6 +158,8 @@ unset http_proxy && unset https_proxy
 ---
 
 ## 12. 每一步怎么跑
+
+> 下面每条命令都假设你已经 `source` 过 11.1 里那个虚拟环境（新开终端要重新激活），否则用的还是 base 的 python。
 
 ### 12.1 单卡（①～④）
 
