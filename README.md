@@ -219,4 +219,17 @@ pip install trl[vllm]           # 用 vLLM 加速生成
 
 ---
 
+## 8. 来源、版权与引用
+
+这份教程是对 Hugging Face 博客 **《A curriculum for post-training agents》**（<https://huggingface.co/blog/huggingface/train-agents>）的学习笔记：原文的中文译文、逐节对照在 [附录 A](99-附录-资源与术语/README.md)，原文的全部外链在 [附录 B](99-附录-资源与术语/README.md)。
+
+- **原文版权**归 Hugging Face 及其作者所有。译文只用于学习与对照，不是官方译本。
+- 本仓库**文字部分**（中文讲解、表格、示意图、`cloud-setup.md`）按 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 共享：可以转载、改写、商用，注明出处即可。
+- **代码部分**（各章 `code/*.py`、`_site/` 构建脚本）按 [MIT](LICENSE) 授权。
+- 欢迎 issue / PR 纠错。发现译错的段落，直接改对应 `README.md`，然后 `python _site\build.py` 重新生成网页再提交。
+
+> 别人照这份仓库学，最好的引用方式是给个链接：`https://github.com/CosmerHomura/Agentic-Post-training`。
+
+---
+
 **开始读 →** [00 · 开始之前](00-开始之前/README.md)
