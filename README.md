@@ -95,7 +95,9 @@ Hugging Face 那篇课程页是一张"**学习地图**"：它把 agent 后训练
 Agentic Post-training/
 ├── README.md                       ← 你在这里（总目录 / 学习路线 / 资源总表）
 ├── 00-开始之前/
-│   └── README.md                   术语、全景图、环境准备、如何读这份教程
+│   ├── README.md                   术语、全景图、环境准备、如何读这份教程
+│   └── cloud-setup.md              只有云 GPU 时怎么跑：选机器 / 传输 / 命令 / 账单
+├── .gitignore · .gitattributes     不提交 ckpt 与缓存；统一 LF
 ├── 01-监督微调-SFT/
 │   ├── README.md                   译文 + 格式 + 输入输出 + 代码 + 踩坑
 │   ├── data/sft_agent_trace.jsonl  一条完整的 agent 轨迹（含工具调用）
