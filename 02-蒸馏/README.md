@@ -179,15 +179,81 @@ JSONL（只有 prompt）
 把每个位置的散度平均起来，就是这一步的 loss：
 
 ```
-  平均前向 KL  D_KL(p_T‖p_S) = 0.1832
-  β = 0.5 时的蒸馏损失        = 0.0911
+  平均散度  D(p_T‖p_S) = 0.1832      ← 195 个位置里 completion 那 137 个的平均
+  β = 0.5 时的蒸馏损失    = 0.0911
 ```
 
 > 训练时 `DistillationTrainer` 每步都做这件事，且是**分块**算的：
 > 一次性物化 `[seq, 151936]` 的 float32 是 195×151936×4 ≈ 118MB，序列一长就 OOM，
 > 所以它按 chunk 算 KL，再累加。
 
-### 5.6 一个训练步里的张量（形状速查）
+### 5.6 损失怎么算：一个 token 的 KL，手算
+
+上面那张表只给了「p_学生 / p_教师」，但那只是分布里的**一个格子**。真正的损失要看**整个词表 151936 个格子**怎么对不上。下面把词表砍到 4 个词，手算一遍。
+
+**① 两个分布**（同一个位置，学生 vs 教师）
+
+| 词 | 教师 p_T | 学生 p_S |
+|---|---|---|
+| `先` | 0.60 | 0.50 |
+| `看` | 0.30 | 0.30 |
+| `<tool_call>` | 0.08 | 0.15 |
+| `{"` | 0.02 | 0.05 |
+
+学生把本该给 `<tool_call>` 的 0.10 概率挪给了 `{"` —— 典型的「想直接写 JSON」毛病。
+
+**② 每个词贡献多少**：`p_T · ln(p_T / p_S)`
+
+| 词 | p_T·ln(p_T/p_S) | 说明 |
+|---|---|---|
+| `先` | 0.60 × ln(1.20) = **+0.1094** | 学生低估了 → 正贡献 |
+| `看` | 0.30 × ln(1.00) = **0** | 一致 → 无贡献 |
+| `<tool_call>` | 0.08 × ln(0.533) = **−0.0503** | 学生高估了 → 负贡献 |
+| `{"` | 0.02 × ln(0.40) = **−0.0183** | 同上 |
+| **合计** | **0.0408** | 这个位置的散度 |
+
+三个规律：
+
+- 只有**教师认为可能**的词（`p_T > 0`）才进求和 —— 学生瞎猜的分布空间不会被惩罚，这是 KL 的不对称性。
+- 学生**低估**教师看好的词 → 正贡献（把学生往上拽）。
+- 学生**高估**教师不看好的词 → 负贡献（把它压下去）。
+- 两边完全一致时，每一项都是 0。
+
+**③ 换成反方向呢**：`p_S · ln(p_S / p_T)`
+
+| 词 | p_S·ln(p_S/p_T) |
+|---|---|
+| `先` | 0.50 × ln(0.833) = −0.0912 |
+| `看` | 0 |
+| `<tool_call>` | 0.15 × ln(1.875) = +0.0943 |
+| `{"` | 0.05 × ln(2.5) = +0.0458 |
+| **合计** | **0.0489** |
+
+数值不同（0.0408 vs 0.0489）—— **KL 不对称**，这就是 β 存在的理由：你可以选往哪边偏。
+
+**④ β 混合后**（β = 0.5）：先把两个分布平均起来 `p_M = 0.5·p_S + 0.5·p_T = [0.55, 0.30, 0.115, 0.035]`，再各算一次到 `p_M` 的 KL：
+
+```
+  L = β·KL(p_T‖p_M) + (1−β)·KL(p_S‖p_M)
+    = 0.5 × 0.0120 + 0.5 × 0.0100
+    = 0.0110
+```
+
+比单独用任一边都小 —— 因为 `p_M` 在两者中间，两边都「够近」。JSD 的名字就是这么来的。
+
+**⑤ 最后怎么变成一个数**
+
+```
+  loss = 1/|completion| · Σ_{t ∈ completion}  L_t
+```
+
+- **只对 completion 的 token 求平均**，prompt 段 `mask=0`（和 SFT 完全一样的规矩）。
+- 每个 `L_t` 又是对整个词表求和 —— 所以真正算的时候是 `[137, 151936]` 的张量一次性算完，再按 mask 平均。
+- 数字看着小（0.011、0.04）是正常的：分布越接近，值越趋近 0；两个分布完全错开时才会到 1 以上。
+
+> `code/train_distill.py --explain-loss` 会把这段原样打印出来（含每一行的乘法）。
+
+### 5.7 一个训练步里的张量（形状速查）
 
 ```
   input_ids       [1, 195]              # prompt(58) + completion(137)
@@ -203,21 +269,41 @@ JSONL（只有 prompt）
 
 ## 6. 跑起来
 
-脚本：[`code/train_distill.py`](code/train_distill.py)
+脚本：[`code/train_distill.py`](code/train_distill.py)（约 700 行）
+
+### 6.1 两套数据，别混用
+
+| | 本地解剖样本 | 官方训练集 |
+|---|---|---|
+| 位置 | `data/distill_prompts.jsonl`（3 条 prompt） | `--dataset trl-lib/ultrafeedback-prompt`（6.4 万条 prompt） |
+| 用来看 | 模板怎么套、教师与学生的分布差在哪（5.7 节那张表） | **蒸馏效果**：held-out 平均前向 KL 有没有下降 |
+| 能不能训出东西 | 不能。3 条 prompt 训 20 步只是把教师在这 3 条上的输出背下来 | 能 |
+
+蒸馏的训练集**只需要 prompt**——这是它比 SFT 省数据的地方（SFT 每条都要人工/强模型写完整轨迹，蒸馏只要问题）。
+本地这 3 条的作用是把「教师怎么打分」摊开给你看。
+
+### 6.2 命令
 
 ```bash
 cd 02-蒸馏/code
 
-# ① 只跑数据链路（只要 tokenizer，不需要 GPU）
+# (1) 只跑数据链路（只要 tokenizer，不需要 GPU）
 python train_distill.py --inspect
 
-# ② 完整流程：学生生成 → 分布对比 → 训练 → 损失图 → 前后对比 → 写报告
-python train_distill.py
+# (1).5 不加载模型，把 5.7 节的 KL / JSD 手算打一遍（纯数学）
+python train_distill.py --explain-loss
 
-# 常用变体
-python train_distill.py --max-steps 20 --gen-tokens 96   # 冒烟
-python train_distill.py --beta 0.0                       # 前向 KL
-python train_distill.py --temperature 1.5                # 更软的教师分布
+# (2) 本地 3 条 prompt 跑通全流程（验证管线，不代表效果）
+python train_distill.py --max-steps 20 --gen-tokens 96
+
+# (3) 真正蒸馏：官方数据集 3000 条 prompt，留 100 条算 held-out KL
+python train_distill.py --dataset trl-lib/ultrafeedback-prompt --limit 3000 --eval-size 100
+
+# 变体
+python train_distill.py --beta 0.0                  # 前向 KL（只学教师分布的面）
+python train_distill.py --beta 1.0                  # 反向 KL（学生更集中）
+python train_distill.py --temperature 1.5           # 更软的教师分布
+python train_distill.py --teacher Qwen/Qwen2.5-7B-Instruct   # 换更强的老师（显存要够）
 ```
 
 依赖：
@@ -229,25 +315,28 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 | 产物 | 内容 |
 |---|---|
-| `runs/distill/report.md` | **把这份发我**：分布表、loss 表、损失图、前后对比 |
+| `runs/distill/report.md` | **把这份发我**：分布表、held-out KL 前/后、loss 表、损失图 |
 | `runs/distill/tokens.txt` | 全量 token 表 |
 | `runs/distill/loss.csv` | 每步 loss |
 | `ckpt/distill-agent/` | 蒸馏后的学生 |
 
-### 6.1 训练时终端长这样
+### 6.3 训练时终端长这样
 
 ```
   学生参数：494M
   教师参数：1544M
+  训练前 held-out 平均 KL：0.812   （100 条）
 
   step   1  loss 0.4213  lr 3.3e-07  grad 2.881  ent 1.42  len 118  clip 0.00
   step   2  loss 0.3702  lr 6.7e-07  grad 2.104  ent 1.35  len 124  clip 0.00
   step   3  loss 0.3511  lr 1.0e-06  grad 1.933  ent 1.31  len 121  clip 0.00
+  ...
+  训练后 held-out 平均 KL：0.281   （100 条）
 ```
 
 <!-- 待回填：真实 loss 表 + 损失图（跑完把 report.md 发我） -->
 
-### 6.2 损失图
+### 6.4 损失图
 
 ```
   loss 走势 (min 0.351 / max 0.421)
@@ -262,10 +351,10 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 <!-- 待回填：真实损失图 -->
 
-### 6.3 训练前后对比
+### 6.5 训练前后对比
 
 ```
-  ── 用例 1 ──
+  ── 用例 1（held-out 里取一条）──
   prompt：calculator.py 里的测试失败了，请修好它。测试文件是 test_calculator.py。
   蒸馏前（基座学生）：……
   蒸馏后：……
@@ -273,13 +362,13 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 <!-- 待回填：report.md 里的 before/after 两段 -->
 
-判断蒸馏有没有起效，不要只看 loss（它永远降不到 0），看这三个：
+判断蒸馏有没有起效，别只看 loss（它永远降不到 0），看这三个：
 
 | 看什么 | 训练前 | 训练后 |
 |---|---|---|
+| **held-out 平均前向 KL** | 0.8 左右 | 下降 40% 以上 |
 | 有没有按教师的**结构**写（`<tool_call>`） | 直接写 JSON / 写自然语言 | 出现结构化标签 |
-| 会不会**先读再改** | 一上来就猜内容 | 先 `read_file` |
-| 生成长度 | 要么一句话结束、要么跑到上限 | 落在合理区间、能正常收尾 |
+| 生成长度 | 一句话就结束、或跑到上限被截 | 落在合理区间、能正常收尾 |
 
 ---
 

@@ -79,20 +79,20 @@ AutoDL / 阿里云 PAI / 恒源云的控制台都有 JupyterLab，直接把整�
 每台新实例照抄这一段，四步走完就能开跑。
 
 ```bash
-# ① conda 环境（为什么必须建，见 11.1）
+# (1) conda 环境（为什么必须建，见 11.1）
 conda create -n postrl python=3.11 -y
 conda activate postrl
 
-# ② 镜像与缓存（国内直连 huggingface.co 基本必失败）
+# (2) 镜像与缓存（国内直连 huggingface.co 基本必失败）
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_HOME=/root/autodl-tmp/hf          # 系统盘通常只有 30G，模型别放那儿
 
-# ③ 依赖（清华源，装进 postrl 环境）
+# (3) 依赖（清华源，装进 postrl 环境）
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U pip
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
   "trl>=1.16.0" transformers datasets accelerate trl[vllm] openenv-core
 
-# ④ 自检，三行都要过
+# (4) 自检，三行都要过
 python -c "import torch;print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 python -c "import transformers, trl;print(transformers.__version__, trl.__version__)"
 python -c "from transformers import AutoTokenizer;t=AutoTokenizer.from_pretrained('Qwen/Qwen3-0.6B');print('template ok', len(t.chat_template))"
@@ -144,16 +144,32 @@ unset http_proxy && unset https_proxy
 
 ## 12. 每一步怎么跑
 
-### 12.1 单卡（①～④）
+### 12.1 先验证管线，再真训练
+
+`data/` 里的 jsonl 只有 2～3 条，是给你**解剖数据格式**用的，不是训练数据。
+所以每条命令分两段：先小跑验证管线，再换官方数据集真训。
 
 ```bash
-cd 01-监督微调-SFT/code && python train_sft.py
-cd 02-蒸馏/code        && python train_distill.py
-cd 03-强化学习-GRPO/code && python train_grpo.py
-cd 04-RL环境/code      && python train_grpo_env.py
+cd 01-监督微调-SFT/code
+python train_sft.py --inspect                      # 只看数据链路，不需 GPU
+python train_sft.py --dataset trl-lib/Capybara --limit 2000 --eval-size 100
+
+cd 02-蒸馏/code
+python train_distill.py --inspect
+python train_distill.py --dataset trl-lib/ultrafeedback-prompt --limit 3000 --eval-size 100
+
+cd 03-强化学习-GRPO/code
+python train_grpo.py --inspect
+python train_grpo.py --dataset trl-lib/DeepMath-103K --limit 3000 --eval-size 100
+
+cd 04-RL环境/code
+python train_grpo_env.py
 ```
 
 脚本里的数据路径是 `../data/xxx.jsonl`，所以**必须先进到 `code/` 目录**再执行；在仓库根目录跑会报文件不存在。
+加 `--dataset` 后数据从 Hugging Face 下载，记得 `export HF_ENDPOINT=https://hf-mirror.com`。
+
+每章「怎么判断真的学会了」看哪个指标，README 里都有一张表（SFT 看 held-out -ln p、蒸馏看 KL、GRPO 看 pass@1）。
 
 ### 12.2 用 tmux 防断线
 

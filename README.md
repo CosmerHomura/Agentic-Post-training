@@ -46,23 +46,22 @@ Hugging Face 那篇课程页是一张"**学习地图**"：它把 agent 后训练
 ## 2. 五步一图看懂
 
 ```
-   ┌────────────────────────────────────────────────────────────────────┐
-   │                       同一个模型，五种监督信号                      │
-   └────────────────────────────────────────────────────────────────────┘
+   同一个模型，五种监督信号
+   ══════════════════════════════════════════════════════════════════════
 
-   ① SFT          数据：(prompt, 完整正确轨迹)      信号：每个 token 的硬标签
+   (1) SFT          数据：(prompt, 完整正确轨迹)      信号：每个 token 的硬标签
       模仿          ─────────────────────────────▶  loss = 交叉熵
 
-   ② 蒸馏         数据：(prompt)  学生自己生成      信号：教师每个 token 的分布
+   (2) 蒸馏         数据：(prompt)  学生自己生成      信号：教师每个 token 的分布
       对齐分布      ─────────────────────────────▶  loss = JSD(p_学生 ‖ p_教师)
 
-   ③ RL/GRPO      数据：(prompt, 可验证答案)        信号：整条回答一个分数
+   (3) RL/GRPO      数据：(prompt, 可验证答案)        信号：整条回答一个分数
       试错优化      ─────────────────────────────▶  loss = 组内相对优势 × 策略梯度
 
-   ④ RL 环境      数据：(任务) + 有状态环境        信号：多轮交互后的最终结果
+   (4) RL 环境      数据：(任务) + 有状态环境        信号：多轮交互后的最终结果
       行动学习      ─────────────────────────────▶  同上，但轨迹由环境决定长度
 
-   ⑤ Harness      数据：(任务) + 真实 agent + 沙箱  信号：真实 agent 跑完的结果
+   (5) Harness      数据：(任务) + 真实 agent + 沙箱  信号：真实 agent 跑完的结果
       规模化        ─────────────────────────────▶  同上，但生成与训练解耦并行
 
         监督密度：  密集(每token) ────────────────▶ 稀疏(每个 episode 一个数)
@@ -101,17 +100,17 @@ Agentic Post-training/
 │   └── cloud-setup.md              只有云 GPU 时怎么跑：选机器 / 传输 / 命令 / 账单
 ├── .gitignore · .gitattributes     不提交 ckpt 与缓存；统一 LF
 ├── 01-监督微调-SFT/
-│   ├── README.md                   译文 + 格式 + 输入输出 + 代码 + 踩坑
-│   ├── data/sft_agent_trace.jsonl  一条完整的 agent 轨迹（含工具调用）
-│   └── code/train_sft.py
+│   ├── README.md                   译文 + 格式 + 输入输出 + 损失手算 + 代码 + 踩坑
+│   ├── data/sft_agent_trace.jsonl  解剖样本（2 条完整轨迹，训练请用 trl-lib/Capybara）
+│   └── code/train_sft.py           四阶段打印 + 训练 + 前后评测
 ├── 02-蒸馏/
 │   ├── README.md
-│   ├── data/distill_prompts.jsonl  只需要 prompt
-│   └── code/train_distill.py
+│   ├── data/distill_prompts.jsonl  解剖样本（3 条 prompt，训练请用 trl-lib/ultrafeedback-prompt）
+│   └── code/train_distill.py       分布对比 + KL 手算 + 训练 + 前后 KL 评测
 ├── 03-强化学习-GRPO/
 │   ├── README.md
-│   ├── data/grpo_prompts.jsonl     prompt + ground_truth
-│   └── code/{rewards.py, train_grpo.py}
+│   ├── data/grpo_prompts.jsonl     解剖样本（3 道题，训练请用 trl-lib/DeepMath-103K）
+│   └── code/train_grpo.py          采样打分 + 优势计算 + 损失手算 + 训练 + pass@1 评测
 ├── 04-RL环境/
 │   ├── README.md
 │   └── code/{env_factory.py, train_grpo_env.py}

@@ -51,15 +51,13 @@
    prompt（数据集里的，或 env.reset() 返回的）
       │
       ▼
-┌───────────────────────────────────────────────────────────────┐
-│ 轮 1  模型: "先读文件" → tool_call read_file("solution.py")    │
-│       环境: 返回文件内容          ← 拼进上下文                  │
-│ 轮 2  模型: "除零没处理" → tool_call write_file(...)           │
-│       环境: 写入磁盘，返回"已写入"                              │
-│ 轮 3  模型: tool_call run_tests()                              │
-│       环境: 跑 pytest，返回 "2 passed"                          │
-│ 轮 4  模型: "修好了" → 结束                                     │
-└───────────────────────────────────────────────────────────────┘
+   轮 1  模型：先读文件 → tool_call read_file("solution.py")
+         环境：返回文件内容
+   轮 2  模型：除零没处理 → tool_call write_file(...)
+         环境：写入磁盘，返回"已写入"
+   轮 3  模型：tool_call run_tests()
+         环境：跑 pytest，返回 "2 passed"
+   轮 4  模型：修好了 → 结束
       │
       ▼
   env.get_reward() → 1.0
@@ -157,19 +155,22 @@ training_args = GRPOConfig(
 
 ## 7. 输入输出：多轮视角
 
+一个 episode 就是一条很长的 input_ids（受 `max_completion_length` 约束）：
+
+| 段 | prompt | turn 1 生成 | 工具结果 | turn 2 生成 | … |
+|---|---|---|---|---|---|
+| `loss_mask` | `-100` | **保留** | `-100` | **保留** | `-100` |
+
+也就是说：**模型自己说的算 loss，模型看到的不算**——和 SFT 的掩码规则同源，只是这里要跨好几轮。
+
 ```
-                     ┌──────────── 一个 episode（受 max_completion_length 约束）────────────┐
-input_ids:           │ prompt ⧺ [turn1 completion] ⧺ [tool result] ⧺ [turn2 completion] ⧺ ... │
-loss mask:           │  -100  │      保留        │    -100     │      保留        │  -100    │
-                     └───────────────────────────────────────────────────────────────────────┘
-                                                                    │
-                                                                    ▼
-                                              env.get_reward()  →  reward  [1]
-                                                                    │
-                                          与另外 7 条 rollout 组内标准化 → advantage
-                                                                    │
-                                                                    ▼
-                                                     对每一轮 completion token 做策略梯度
+整条 episode 的 logprobs  ──►  env.get_reward()  →  reward [1]
+                                      │
+                                      ▼
+                        与另外 7 条 rollout 组内标准化 → advantage
+                                      │
+                                      ▼
+                        对每一轮「保留」的 token 做策略梯度
 ```
 
 **和 SFT 的 mask 规则完全一致**：只有 assistant（模型自己说的）算 loss，工具结果和环境返回一律 `-100`。

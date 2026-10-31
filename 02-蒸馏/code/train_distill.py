@@ -87,6 +87,42 @@ def read_prompts(path: Path):
     return rows
 
 
+def normalize_prompt(x):
+    """HF 数据集里 prompt 可能是「消息列表」也可能是「一句字符串」，统一成消息列表。"""
+    if isinstance(x, str):
+        return [{"role": "user", "content": x}]
+    return [dict(m) for m in x]
+
+
+def load_prompts(args):
+    """
+    返回 (训练集, 评测集, 来源)。
+
+    --dataset 用官方 prompt-only 数据集（`trl-lib/ultrafeedback-prompt`，6.4 万条，
+    列名就叫 prompt，正是蒸馏要的形状）；否则读本地 3 条解剖样本。
+    """
+    if args.dataset:
+        from datasets import load_dataset
+
+        print(f"  从 HF 加载：{args.dataset}（split={args.split}）")
+        try:
+            ds = load_dataset(args.dataset, split=args.split)
+        except Exception as e:
+            raise SystemExit(
+                f"  加载失败：{e}\n  国内网络先设 HF_ENDPOINT=https://hf-mirror.com；或用 --data 指向本地 jsonl。"
+            ) from e
+        if args.limit:
+            ds = ds.select(range(min(args.limit, len(ds))))
+        rows = [{"prompt": normalize_prompt(r["prompt"])} for r in ds]
+        src = f"{args.dataset}（取前 {len(rows)} 条）"
+    else:
+        rows = read_prompts(Path(args.data))
+        src = str(args.data)
+
+    n_eval = min(args.eval_size, max(1, len(rows) // 10)) if len(rows) >= 4 else 0
+    return rows[n_eval:], rows[:n_eval], src
+
+
 def device_of(torch):
     return "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -96,10 +132,10 @@ def dtype_of(torch):
 
 
 # ============================================================ 1. 读数据
-def stage_read(rows, tok) -> None:
-    hr("阶段 1 / 5   读 JSONL（只有 prompt，没有答案）")
-    print(f"  文件：{DATA_PATH}")
-    print(f"  行数：{len(rows)}")
+def stage_read(rows, tok, src="", n_eval: int = 0) -> None:
+    hr("阶段 1 / 5   读数据（只有 prompt，没有答案）")
+    print(f"  来源：{src or DATA_PATH}")
+    print(f"  训练 {len(rows)} 条    held-out 评测 {n_eval} 条")
     print()
     for i, r in enumerate(rows):
         msgs = r["prompt"]
@@ -291,7 +327,8 @@ def _tid(tok, text: str) -> int:
 
 
 # ============================================================ 6. 训练
-def train(rows, epochs: float, max_steps: int | None, beta: float, temperature: float, gen_tokens: int):
+def train(rows, epochs: float, max_steps: int | None, beta: float, temperature: float,
+          gen_tokens: int, before_hook=None):
     hr("阶段 6   训练（学生每个 logging 步打印一次 loss）")
     import torch
     from datasets import Dataset
@@ -358,12 +395,28 @@ def train(rows, epochs: float, max_steps: int | None, beta: float, temperature: 
     print(f"  学生参数：{sum(p.numel() for p in trainer.model.parameters()) / 1e6:.0f}M")
     print(f"  教师参数：{sum(p.numel() for p in trainer.teacher_model.parameters()) / 1e6:.0f}M")
     print()
+
+    # ---- 训练前：先在 held-out 上量一次「离教师多远」----
+    pre = {}
+    if before_hook is not None:
+        trainer.model.eval()
+        pre = before_hook(trainer.model, trainer.teacher_model)
+        print(f"  训练前 held-out 平均 KL：{pre['kl']:.4f}")
+
+    print()
     result = trainer.train()
     trainer.save_model(args.output_dir)
+
+    post = {}
+    if before_hook is not None:
+        trainer.model.eval()
+        post = before_hook(trainer.model, trainer.teacher_model)
+        print(f"  训练后 held-out 平均 KL：{post['kl']:.4f}")
+
     print()
     print(f"  训练结束：{result.metrics}")
     print(f"  权重已存：{args.output_dir}")
-    return trainer, printer.rows
+    return trainer, printer.rows, pre, post
 
 
 # ============================================================ 7. 损失图
@@ -385,31 +438,45 @@ def chart(rows, width: int = 46) -> str:
     return "\n".join(lines)
 
 
-# ============================================================ 8. 前后对比
-def stage_before_after(rows, trainer, tok, gen_tokens: int, is_cuda: bool):
-    hr("阶段 7   训练后：同一个 prompt，学生现在怎么写")
+# ============================================================ 7.5 held-out 评测
+def probe_kl(tok, student, teacher, eval_rows, gen_tokens: int, temperature: float, k: int = 8):
+    """
+    held-out 上量一次「学生离教师有多远」：越大说明还没学会教师。
+
+    做法：学生自己生成 → 教师在同一串 token 上给分布 → 算平均前向 KL。
+    蒸馏做对了，这个数应该明显下降。
+    """
     import torch
 
-    prompts = rows[:2]
-    outs = []
-    for i, r in enumerate(prompts):
-        msgs = r["prompt"]
-        ids = ids_of(tok, msgs, add_generation_prompt=True)
-        t = torch.tensor([ids], device=trainer.model.device)
+    dev = student.device
+    teacher = teacher.to(dev).eval()
+    kl_sum, n_tok, samples = 0.0, 0, []
+    for idx, r in enumerate(eval_rows[:k]):
+        ids = ids_of(tok, r["prompt"], add_generation_prompt=True)
+        t = torch.tensor([ids], device=dev)
         with torch.no_grad():
-            out = trainer.model.generate(
-                t,
-                max_new_tokens=gen_tokens,
-                do_sample=False,
+            out = student.generate(
+                t, max_new_tokens=gen_tokens, do_sample=False,
                 pad_token_id=tok.pad_token_id or tok.eos_token_id,
             )
-        text = tok.decode(out[0][len(ids):], skip_special_tokens=False)
-        outs.append({"prompt": msgs[-1]["content"], "after": text})
-        print(f"  ── 用例 {i + 1} ──")
-        print(f"  prompt：{msgs[-1]['content'][:60]}…")
-        print(f"  蒸馏后：{text.strip()[:300]}")
-        print()
-    return outs
+            gen = out[0][len(ids):].tolist()
+            if not gen:
+                continue
+            full = torch.tensor([ids + gen], device=dev)
+            ls = student(full).logits[0]
+            lt = teacher(full).logits[0]
+        start = len(ids) - 1
+        for i in range(len(gen)):
+            pos = start + i
+            ps = torch.softmax(ls[pos] / temperature, dim=-1)
+            pt = torch.softmax(lt[pos] / temperature, dim=-1)
+            kl_sum += float(torch.sum(pt * (torch.log(pt + 1e-9) - torch.log(ps + 1e-9))))
+            n_tok += 1
+        if idx < 2:
+            samples.append(
+                {"prompt": r["prompt"][-1]["content"], "out": tok.decode(gen, skip_special_tokens=False)}
+            )
+    return (kl_sum / n_tok if n_tok else float("nan")), samples
 
 
 # ============================================================ 9. 报告
@@ -423,7 +490,8 @@ def write_report(payload: dict) -> None:
     L.append(f"- 教师：`{payload['teacher']}`")
     L.append(f"- β = {payload['beta']}，temperature = {payload['temperature']}")
     L.append(f"- 生成长度上限：{payload['gen_tokens']} tokens")
-    L.append(f"- 样本数：{payload['n_samples']}，训练步数：{payload['n_steps']}\n")
+    L.append(f"- 样本数：{payload['n_samples']}（评测 {payload.get('n_eval', 0)}），训练步数：{payload['n_steps']}")
+    L.append(f"- 数据来源：{payload.get('src', '本地 jsonl')}\n")
 
     L.append("## 1. 训练前：教师与学生的分布差\n")
     L.append(f"- 平均前向 KL：**{payload['mean_kl']:.4f}**")
@@ -446,9 +514,19 @@ def write_report(payload: dict) -> None:
         )
     L.append("\n```\n" + chart(payload["train_rows"]) + "\n```\n")
 
-    L.append("## 3. 训练前后对比\n")
-    for i, o in enumerate(payload["before_after"]):
-        L.append(f"### 用例 {i + 1}\n")
+    L.append("## 3. held-out 评测（训练前 vs 训练后）\n")
+    if payload.get("pre") and payload.get("post"):
+        L.append("| | 平均前向 KL（学生 vs 教师，越小越像） |")
+        L.append("|---|---|")
+        L.append(f"| 训练前 | **{payload['pre']['kl']:.4f}** |")
+        L.append(f"| 训练后 | **{payload['post']['kl']:.4f}** |")
+        for tag in ("pre", "post"):
+            for o in payload[tag]["samples"]:
+                L.append(f"\n**{tag}** · prompt：{o['prompt'][:80]}\n\n```\n{o['out']}\n```")
+    else:
+        L.append("（没有 held-out 评测：样本太少或用了 --no-eval）")
+    for i, o in enumerate(payload.get("before_after", [])):
+        L.append(f"\n### 用例 {i + 1}\n")
         L.append(f"**prompt**：{o['prompt']}\n")
         L.append(f"**蒸馏后**：\n\n```\n{o['after']}\n```\n")
 
@@ -461,10 +539,65 @@ def write_report(payload: dict) -> None:
 _TOK = None
 
 
+# ============================================================ 手算损失
+def explain_loss(beta: float) -> None:
+    """词表砍到 4 个词，把 KL / JSD 逐项算出来（纯数学，不加载任何模型）。"""
+    import math
+
+    words = ["先", "看", "<tool_call>", '{"']
+    p_t = [0.60, 0.30, 0.08, 0.02]   # 教师
+    p_s = [0.50, 0.30, 0.15, 0.05]   # 学生：把 0.10 从 <tool_call> 挪给了 {
+
+    def kl(a, b):
+        return sum(x * math.log(x / y) for x, y in zip(a, b) if x > 0)
+
+    hr("手算一遍：一个位置的蒸馏损失（词表只有 4 个词）")
+    print("  同一个位置，教师和学生的完整分布：")
+    print()
+    print(f"  {'词':<12} {'p_T':>6} {'p_S':>6}   p_T - p_S")
+    print("  " + "-" * 44)
+    for w, t, s in zip(words, p_t, p_s):
+        flag = "  ← 学生低估" if t - s > 1e-9 else ("  ← 学生高估" if s - t > 1e-9 else "")
+        print(f"  {w:<12} {t:>6.2f} {s:>6.2f}   {t - s:+.2f}{flag}")
+
+    print("\n  ① 前向 KL  KL(p_T‖p_S) = Σ p_T·ln(p_T/p_S)")
+    print(f"  {'词':<12} {'p_T·ln(p_T/p_S)':>16}")
+    print("  " + "-" * 32)
+    for w, t, s in zip(words, p_t, p_s):
+        print(f"  {w:<12} {t * math.log(t / s):>+16.4f}")
+    fwd = kl(p_t, p_s)
+    print(f"  {'合计':<12} {fwd:>+16.4f}")
+
+    print("\n  ② 反向 KL  KL(p_S‖p_T) = Σ p_S·ln(p_S/p_T)")
+    print(f"  {'词':<12} {'p_S·ln(p_S/p_T)':>16}")
+    print("  " + "-" * 32)
+    for w, t, s in zip(words, p_t, p_s):
+        print(f"  {w:<12} {s * math.log(s / t):>+16.4f}")
+    rev = kl(p_s, p_t)
+    print(f"  {'合计':<12} {rev:>+16.4f}")
+
+    print(f"\n  两个方向不相等（{fwd:.4f} vs {rev:.4f}）—— KL 不对称，这就是 β 的用处。")
+
+    p_m = [beta * t + (1 - beta) * s for t, s in zip(p_t, p_s)]
+    L = beta * kl(p_t, p_m) + (1 - beta) * kl(p_s, p_m)
+    print(f"\n  ③ 取 β = {beta}：先混合 p_M = β·p_T + (1-β)·p_S")
+    print(f"     p_M = [{', '.join(f'{x:.4f}' for x in p_m)}]")
+    print(f"     KL(p_T‖p_M) = {kl(p_t, p_m):.4f}")
+    print(f"     KL(p_S‖p_M) = {kl(p_s, p_m):.4f}")
+    print(f"     L = β·KL(p_T‖p_M) + (1-β)·KL(p_S‖p_M) = {L:.4f}")
+    print("\n  β = 0 退化为前向 KL，β = 1 退化为反向 KL，中间是广义 JSD。")
+
+    print("\n  ④ 真实训练里：")
+    print("     · 每个位置都算一次这样的 L_t（词表 151936 维，不是 4 维）")
+    print("     · 只对 completion 的 token 取平均，prompt 段 mask=0")
+    print(f"     · 整个 batch 再平均 → 你看到的 loss（0.0x ~ 0.5 都是正常的）")
+
+
 def main() -> None:
     global _TOK, STUDENT, TEACHER
     ap = argparse.ArgumentParser()
     ap.add_argument("--inspect", action="store_true", help="只跑数据链路（不需 GPU / 不需 trl）")
+    ap.add_argument("--explain-loss", action="store_true", help="玩具分布手算 KL / JSD（不需 GPU）")
     ap.add_argument("--model", default=STUDENT)
     ap.add_argument("--teacher", default=TEACHER)
     ap.add_argument("--epochs", type=float, default=2)
@@ -472,9 +605,18 @@ def main() -> None:
     ap.add_argument("--beta", type=float, default=0.5)
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--gen-tokens", type=int, default=160)
+    ap.add_argument("--data", default=str(DATA_PATH))
+    ap.add_argument("--dataset", default=None, help="HF 数据集名，如 trl-lib/ultrafeedback-prompt")
+    ap.add_argument("--split", default="train")
+    ap.add_argument("--limit", type=int, default=2000, help="从官方数据集取前多少条 prompt")
+    ap.add_argument("--eval-size", type=int, default=100, help="留出多少条做 held-out 评测")
     args = ap.parse_args()
 
     STUDENT, TEACHER = args.model, args.teacher
+
+    if args.explain_loss:
+        explain_loss(args.beta)
+        return
 
     hr("阶段 0 / 5   环境")
     import transformers
@@ -497,9 +639,9 @@ def main() -> None:
     )
 
     _TOK = AutoTokenizer.from_pretrained(STUDENT)
-    rows = read_prompts(DATA_PATH)
+    rows, eval_rows, src = load_prompts(args)
 
-    stage_read(rows, _TOK)
+    stage_read(rows, _TOK, src, len(eval_rows))
     stage_template(rows)
     prompt_ids = stage_tokens(rows)
 
@@ -512,11 +654,18 @@ def main() -> None:
     student, gen = stage_generate(prompt_ids, _TOK, args.gen_tokens, args.temperature)
     dist_rows, mean_kl, loss, _ = stage_distributions(prompt_ids, gen, _TOK, student, args.beta, args.temperature)
 
-    trainer, train_rows = train(rows, args.epochs, args.max_steps, args.beta, args.temperature, args.gen_tokens)
+    def hook(model, teacher):
+        return dict(
+            zip(("kl", "samples"),
+                probe_kl(_TOK, model, teacher, eval_rows, min(args.gen_tokens, 120), args.temperature))
+        )
+
+    trainer, train_rows, pre, post = train(
+        rows, args.epochs, args.max_steps, args.beta, args.temperature, args.gen_tokens,
+        before_hook=hook if eval_rows else None,
+    )
     print()
     print(chart(train_rows))
-
-    before_after = stage_before_after(rows, trainer, _TOK, min(args.gen_tokens, 120), cuda)
 
     payload = {
         "student": STUDENT,
@@ -524,13 +673,16 @@ def main() -> None:
         "beta": args.beta,
         "temperature": args.temperature,
         "gen_tokens": args.gen_tokens,
+        "src": src,
         "n_samples": len(rows),
+        "n_eval": len(eval_rows),
         "n_steps": len(train_rows),
         "mean_kl": mean_kl,
         "loss": loss,
         "dist_rows": dist_rows,
         "train_rows": train_rows,
-        "before_after": before_after,
+        "pre": pre,
+        "post": post,
     }
     write_report(payload)
 

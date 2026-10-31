@@ -1,324 +1,424 @@
+[← 上一章：02 · 蒸馏](../02-蒸馏/README.md) ｜ [总目录](../README.md) ｜ [下一章：04 · RL 环境 →](../04-RL环境/README.md)
+
 # 03 · 强化学习（GRPO）
 
-[← 上一节：蒸馏](../02-蒸馏/README.md) · [总目录](../README.md) · [下一节：RL 环境 →](../04-RL环境/README.md)
+> 原文小节：**3. Reinforcement learning (RL)** —— 用「一个分数」代替教师和答案轨迹。
+> 这一章配了**可运行脚本**：`code/train_grpo.py`（全链路打印 + 损失手算 + 训练 + 前后对比）。
 
 ---
 
 ## 1. 一句话定义
 
-**让模型对同一个问题写 8 个答案，打分，然后"把比平均分高的那些答案变得更可能"。**
+给同一个问题采样 G 个答案，逐条打分，然后**让「比组内平均分高」的答案更可能出现、比平均分低的更不可能**。
 
-不需要教师，不需要标准轨迹 —— 只需要一个**能判断对错的东西**（奖励函数）。这就是从"抄"转向"练"的分水岭。
+不需要教师模型，也不需要标准答案轨迹 —— 只需要一个能判断对错的东西。这是从「抄」转向「练」的分水岭。
 
 ---
 
 ## 2. 原文译文 · 3. Reinforcement learning (RL)
 
-> 在强化学习中，模型从**对自己输出的一个分数**里学习。它写一个答案，奖励函数给它打分，训练让高分答案变得更可能。这样就**不再需要教师**——只要能校验答案就够了。
+> 在强化学习中，模型从对自己输出的一个分数里学习。它写一个答案，奖励函数给它打分，训练让高分答案变得更可能。这样就不再需要教师 —— 只要能校验答案就够了。
 >
-> 这一步用的算法是 **GRPO（Group Relative Policy Optimization）**。对每个 prompt，它采样若干个答案，给它们全部打分，然后提高那些**得分高于组内平均**的答案的概率。在组内比较答案，就告诉了模型哪些尝试更好，**而不需要另外训练一个模型来估计这件事**（这正是它相对 PPO 省掉 critic 的地方）。
+> 这一步用的算法是 **GRPO（Group Relative Policy Optimization）**。对每个 prompt，它采样若干个答案，给它们全部打分，然后提高那些得分高于组内平均的答案的概率。在组内比较答案，就告诉了模型哪些尝试更好，而不需要另外训练一个模型来估计这件事（这正是它相对 PPO 省掉 critic 的地方）。
 >
-> 这个信号比蒸馏弱：**整条答案只有一分数**，而不是每个 token 一个值，所以模型需要很多次尝试才能学到东西。用普通奖励函数时，每个答案只有一轮、只打一次分。而**环境**让模型可以行动多次，并看到每个动作的结果。
+> 这个信号比蒸馏弱：整条答案只有一分数，而不是每个 token 一个值，所以模型需要很多次尝试才能学到东西。用普通奖励函数时，每个答案只有一轮、只打一次分。而环境让模型可以行动多次，并看到每个动作的结果。
 
-### 原文推荐资源
+**原文推荐资源**
 
 | 类型 | 链接 |
 |---|---|
-| Watch | [Training Agents 3: reinforcement learning](https://www.youtube.com/watch?v=ztdTed5egrM)（[合集](https://huggingface.co/collections/sergiopaniego/training-agents-class-3-reinforcement-learning-6ad6aa71050342629dd0e3ec)） |
-| Read | [How frontier models train on outcomes in 2026](https://huggingface.co/blog/sergiopaniego/agentic-rl-2026) |
-| Project | [Fine-tuning a 350M model for structured outputs in 100 GRPO steps](https://huggingface.co/blog/grpo-with-trl-ifstruct) |
+| Watch | [Training Agents 3: reinforcement learning](https://huggingface.co/collections/merve/training-agents-3-reinforcement-learning-6ad6aa71050342629dd0e3ec)（合集） |
+| Read | [How frontier models train on outcomes in 2026](https://huggingface.co/blog/merve/agentic-rl-2026) |
+| Project | [Fine-tuning a 350M model for structured outputs in 100 GRPO steps](https://huggingface.co/spaces/merve/grpo-with-trl-ifstruct) |
 | Docs | [GRPO Trainer](https://huggingface.co/docs/trl/grpo_trainer) |
 
 ---
 
-## 3. GRPO 到底在算什么
-
-### 3.1 四个步骤（TRL 文档的原话顺序）
-
-```
-① 生成       每个 prompt 采样 G 条 completion（G = num_generations，默认 8）
-② 算优势     用同一 prompt 的 G 个奖励做组内标准化
-③ 估 KL      与参考模型的 KL（beta>0 时才需要参考模型）
-④ 算损失     对 completion 的每个 token 做 clipped 策略梯度
-```
-
-### 3.2 优势：为什么"组内比较"就够
-
-```
-prompt: "23 × 47 = ?"
-   ├── 回答1  <answer>1081</answer>   reward 1.0   ┐
-   ├── 回答2  <answer>1081</answer>   reward 1.0   │ 组内均值 μ = 0.5
-   ├── 回答3  <answer>1000</answer>   reward 0.0   │ 组内标准差 σ = 0.5
-   ├── 回答4  <answer>1081</answer>   reward 1.0   ┘
-   ...
-                    r_i - μ
-        A_i = ───────────────────
-                     σ + ε
-
-   → 答对的 A ≈ +1，答错的 A ≈ -1
-   → 训练目标：让 A>0 的整条序列概率上升，A<0 的下降
-```
-
-**关键洞察**：因为基线 μ 来自"同一 prompt 的其他尝试"，所以**不需要 critic 网络**去估计"这个状态值多少"。这就是 GRPO 比 PPO 省一半显存的原因。
-
-### 3.3 损失（每个 completion token 上）
-
-```
-ratio_t = π_θ(y_t | y_<t) / π_old(y_t | y_<t)
-
-L = -E[ min( ratio_t · A,  clip(ratio_t, 1-ε, 1+ε) · A ) ]
-```
-
-`clip` 是防止一步更新太猛把策略带崩。`loss_type="dapo"`（默认）在此之上不按回答长度归一，避免长回答被系统性压低。
-
----
-
-## 4. 训练信号从哪来
+## 3. 训练信号从哪来
 
 | 环节 | 内容 |
 |---|---|
-| **输入** | `prompt`（+ 数据集里的额外列，如 `ground_truth`） |
-| **模型产出** | 每个 prompt **G 条** completion |
-| **监督信号** | 每条 completion 一个标量 reward（可以是多个奖励相加） |
-| **损失** | 组内标准化优势 × clipped 策略梯度 |
-| **产物** | 会"拿高分"的模型——前提是你的奖励函数真的量对了东西 |
+| 输入 | prompt + **判分依据**（标准答案、单测、正则…） |
+| 模型产出 | G 条完整答案 + 每条的分数 |
+| 监督信号 | **每条答案一个标量** `r_i`，组内归一化成优势 `A_i` |
+| 损失 | 策略梯度：提高 `A>0` 的 token 概率、压低 `A<0` 的 |
+| 和 SFT 的差别 | SFT 学「这个 token 一定对」；GRPO 只学「这条路整体更好」 |
+
+**信号密度对比**（这就是原文说的「比蒸馏弱」）：
 
 ```
-        prompt ──┬──▶ completion 1 ──▶ reward 1.0 ┐
-                 ├──▶ completion 2 ──▶ reward 0.0 │
-                 ├──▶ completion 3 ──▶ reward 1.0 │──▶ 组内标准化 ──▶ A_i ──▶ loss
-                 └──▶ ...             ──▶ reward 0.0 ┘
+SFT        : 166 个 token，每个都有确定答案        → 强、稳，但只会模仿
+蒸馏        : 每 token 一个教师分布（几千维）        → 最强，但要教师
+GRPO       : 整条 1 个数（group 内相对比较）        → 弱、稀疏，但可以超越教师
 ```
 
 ---
 
-## 5. 输入格式
-
-### 5.1 数据集：prompt + 你想要的任何额外列
+## 4. 输入格式：只有 prompt，没有答案
 
 `data/grpo_prompts.jsonl`：
 
 ```json
-{"prompt": [{"role": "user", "content": "计算 23 × 47 的值。……写进 <answer></answer>。"}],
+{"prompt": [{"role": "system", "content": "你是一个数学解题助手。先想，再答。"},
+            {"role": "user", "content": "23 × 47 = ?\n请把最终答案写在 <answer></answer> 里。"}],
  "ground_truth": "1081"}
 ```
 
-| 列 | 必需 | 说明 |
+逐字段：
+
+| 字段 | 类型 | 作用 | 注意 |
+|---|---|---|---|
+| `prompt` | `list[dict]` | 送进模型的对话（最后一条是 user） | 对话格式，训练时自动套 chat template |
+| `ground_truth` | `str` | 判分用 | 名字随你定，会被当作 kwargs 传给奖励函数 |
+| `tools`（可选） | `list[dict]` | 工具 schema | 需要多轮工具时才加 |
+| `environment`（可选） | `str` | 多环境时的路由键 | 见第 4 章 |
+
+**关键区别**：这里**没有 `completion` 字段**。答案由模型自己写，写 8 次就是 8 条不同的样本。
+
+---
+
+## 5. 奖励函数：唯一的「老师」
+
+奖励函数就是一个普通 Python 函数：收一批 completion，返回**同样长度的 `list[float]`**。
+
+```python
+def accuracy_reward(completions, ground_truth=None, **kwargs):
+    scores = []
+    for comp, gt in zip(completions, ground_truth or [None] * len(completions)):
+        content = comp[0]["content"] if isinstance(comp, (list, tuple)) else comp
+        m = re.search(r"<answer>\s*(.*?)\s*</answer>", content, re.S)
+        got = m.group(1).strip() if m else ""
+        scores.append(1.0 if got == str(gt).strip() else 0.0)
+    return scores
+```
+
+**三条契约**（违反任何一条都会静默训坏）：
+
+1. 返回 `list[float]`，长度 = completion 条数，**顺序一一对应** —— 返回单个 float 或标量会被当成「所有答案同分」。
+2. 数据集里除 `prompt` 外的列会**按列名**传进函数（`ground_truth=...`）；签名里写 `**kwargs` 最安全。
+3. 可以 sync，也可以 `async def`（多个异步奖励会并发跑）。
+
+可用的关键字参数：`prompts`、`completions`、`completion_ids`、`trainer_state`、`log_extra(col, values)`、`log_metric(name, value)`、`environments`，以及数据集的其它列。
+
+---
+
+## 6. 全链路实拍
+
+> 下面第 1～4 步是**结构示意**（真实跑一份，数字随采样变化）；
+> 跑过 `python train_grpo.py` 后把 `runs/grpo/report.md` 发我，我回填成实测值。
+
+### 6.1 第 1 步：读数据（没有答案）
+
+```
+文件：…/03-强化学习-GRPO/data/grpo_prompts.jsonl
+行数：3
+
+── 第 1 条 ──
+  prompt      : 23 × 47 = ?  请把最终答案写在 <answer></answer> 里。…
+  ground_truth: '1081'
+  其他列      : 无
+
+和 SFT 的区别：这里没有 assistant 轨迹，只有「什么算对」。
+```
+
+### 6.2 第 2 步：套模板 + tokenize（和 SFT 前半段完全一样）
+
+```
+<|im_start|>system
+你是一个数学解题助手…<|im_end|>
+<|im_start|>user
+23 × 47 = ?…<|im_end|>
+<|im_start|>assistant
+```
+
+到 `assistant\n` 为止都相同。**差别从下一步开始**：SFT 在这里塞人写好的轨迹，GRPO 让模型自己往下写 G 条。
+
+### 6.3 第 3 步：采样 G 条并逐条打分
+
+```
+── 第 1 条 ──   <think>23×47 = 23×40 + 23×7 = 920 + 161</think>   <answer>1081</answer>
+── 第 2 条 ──   <think>…</think> <answer>1071</answer>
+── 第 3 条 ──   …<answer>1081</answer>
+── 第 4 条 ──   23 × 47 = 1081                      ← 没按格式写
+…
+
+  i     format   accuracy   reward
+  --------------------------------
+  1        1.0        1.0      2.0
+  2        1.0        0.0      1.0
+  3        1.0        1.0      2.0
+  4        0.0        0.0      0.0   ← 没格式 → 两个函数都判 0
+```
+
+注意第 4 条：**格式分不是装饰**。没有 `<answer>` 标签，正确性分也拿不到 —— 所以格式奖励会逼模型先学会「怎么说」，再学「说得对」。
+
+### 6.4 第 4 步：组内归一化算优势
+
+```
+组内均值 mean = 1.25   标准差 std = 0.829
+
+  i   reward    A_i   含义
+  ------------------------------
+  1      2.0   0.906   比平均好 → 提高这串 token 的概率
+  2      1.0  -0.302   比平均差 → 压低
+  3      2.0   0.906   比平均好 → 提高
+  4      0.0  -1.509   最差 → 压得最狠
+```
+
+**为什么减均值、除标准差**：绝对分数受任务难度影响（全是 2 分的题和全是 0 分的题没法共享一套学习率）；组内相对化之后，每道题都变成「谁比谁好」，梯度尺度统一。
+
+**退化组**：如果一组全对（`std = 0`），所有 `A_i = 0`，这一步**学不到任何东西**。所以选题要选「模型能做对一部分」的难度 —— 全对全错都是在浪费算力。
+
+---
+
+## 7. 损失怎么算（手算一遍）
+
+这一步最容易含糊过去。下面全部用具体数字走一遍，`code/train_grpo.py --explain-loss` 会把这段原样打印出来。
+
+### 7.1 四步总览
+
+```
+  (1) 采样 G 条        prompt ──► [c1, c2, …, cG]             （模型自己写）
+  (2) 逐条打分         [c1..cG] ──► [r1, r2, …, rG]           （奖励函数）
+  (3) 组内归一化       [r1..rG] ──► [A1, A2, …, AG]           A_i = (r_i-μ)/(σ+ε)
+  (4) 逐 token 算损失   每个 completion 的每个 token 取一次 ratio，裁剪后乘 A_i，再平均
+```
+
+### 7.2 第 (3) 步的具体数字
+
+取一组 4 条，奖励 `[1, 0, 1, 0]`：
+
+```
+  μ  = (1+0+1+0)/4 = 0.50
+  σ  = sqrt(((1-.5)²+(0-.5)²+(1-.5)²+(0-.5)²)/4) = 0.50
+  A  = [(1-.5)/.5, (0-.5)/.5, (1-.5)/.5, (0-.5)/.5]
+     = [+1.0, -1.0, +1.0, -1.0]
+```
+
+对的两条各 `+1`，错的两条各 `-1` —— 正负对称，这就是 GRPO **不需要 critic** 的原因：基线直接由同组其它样本提供。
+
+### 7.3 第 (4) 步：一个 token 的损失长什么样
+
+`ratio = p_new(token) / p_old(token)`，即「更新后的模型对这个 token 的偏好」相对「采样时那个模型」涨了几倍。
+
+对**正确**答案里某个 token（`A = +1`），假设 `p_old = 0.20`、`p_new = 0.26`：
+
+```
+  ratio        = 0.26 / 0.20 = 1.30
+  未裁剪项      ratio · A           = 1.30 × 1   = 1.30
+  裁剪项        clip(ratio,0.8,1.2) · A = 1.20 × 1 = 1.20
+  损失贡献      -min(1.30, 1.20)              = -1.20
+```
+
+概率涨到 1.2 倍以后**不再奖励**（`min` 取小的那个），防止一步更新把策略推飞。这就是 PPO 的 clip。
+
+对**错误**答案里同一个 token（`A = -1`）：
+
+```
+  ratio · A         = 1.30 × (-1) = -1.30
+  clip 后           = 1.20 × (-1) = -1.20
+  损失贡献          = -min(-1.30, -1.20) = +1.30
+```
+
+符号全反了：错误答案的概率一旦被推高，损失立刻变大，梯度把它压回去。
+
+### 7.4 两条曲线（图）
+
+把同一个 `ratio` 代进两种 `A`，算出来的损失是这样的（每行 0.05 一档，□ = 一格）：
+
+```
+  ratio       0.8   0.9   1.0   1.1   1.2   1.3   1.4   1.5
+  A = +1     -0.80 -0.90 -1.00 -1.10 -1.20 -1.20 -1.20 -1.20   ← 涨到 1.2 就封顶
+  A = -1     +0.80 +0.90 +1.00 +1.10 +1.20 +1.20 +1.20 +1.20   ← 符号相反
+```
+
+画成条形图更直观（横轴 ratio，纵轴损失）：
+
+```
+  A = +1（这条答案比平均好）
+
+  ratio    损失
+   0.8   -0.80  ████████████
+   0.9   -0.90  █████████████
+   1.0   -1.00  ██████████████
+   1.1   -1.10  ████████████████
+   1.2   -1.20  ██████████████████  ┐
+   1.3   -1.20  ██████████████████  ├ 裁剪平台：不再变
+   1.4   -1.20  ██████████████████  │
+   1.5   -1.20  ██████████████████  ┘
+
+  A = -1（这条答案比平均差）
+
+  ratio    损失
+   0.8   +0.80  ████
+   0.9   +0.90  █████
+   1.0   +1.00  ██████
+   1.1   +1.10  ███████
+   1.2   +1.20  ████████  ┐
+   1.3   +1.20  ████████  ├ 同样封顶
+   1.4   +1.20  ████████  │
+   1.5   +1.20  ████████  ┘
+```
+
+读图要点：
+
+- **`A = +1` 时**：`ratio` 从 `0.8` 涨到 `1.2`，损失线性下降（概率涨得越多、罚得越少）；`1.2` 之后走平 —— 再涨也不额外奖励，这就是「一步别走太远」。
+- **`A = -1` 时**：符号反过来，损失是正的（要增大），同样在 `1.2` 封顶。
+- **`ratio < 0.8` 时**：一样的封顶逻辑（下界），只是这两个例子里没画到。
+- 这条「平台」正是 PPO 的 clip：`min(ratio·A, clip(ratio, 1-ε, 1+ε)·A)` 在两端各截一刀。
+
+### 7.5 最后怎么变成一个数
+
+```
+  L = - 1/(G·T) · Σ_i Σ_t  min( ratio_{i,t} · A_i ,  clip(ratio_{i,t}, 1-ε, 1+ε) · A_i )
+      + β · KL(π_θ ‖ π_ref)
+```
+
+| 符号 | 含义 | 本教程取值 |
 |---|---|---|
-| `prompt` | ✅ | 对话式 messages（或字符串，TRL 会套模板） |
-| `ground_truth` | 通常需要 | **自定义列名**，会作为 kwargs 传给奖励函数 |
-| `tools` | 可选 | 工具 schema，多轮工具调用时需要 |
-| `environment` | 可选 | 多环境时用：填环境名，路由到对应的 factory（见第 4 章） |
-| 其他任意列 | 可选 | 全部会以 kwargs 形式传给 **每一个** 奖励函数 |
+| `G` | 每个 prompt 采几条 | `num_generations=8` |
+| `T` | 每条 completion 的 token 数 | ≤ `max_completion_length` |
+| `ratio` | `exp(logp_new - logp_old)` | 由 trainer 内部算 |
+| `ε` | 裁剪幅度 | 默认 0.2（即 0.8~1.2） |
+| `A_i` | 组内优势 | 见 7.2 |
+| `β` | 参考模型 KL 惩罚 | **默认 0.0**（不用参考模型，省一份显存） |
 
-> 重要机制：**除了 `prompt`，数据集的所有列都会作为关键词参数传给奖励函数。**
-> 所以你把答案列叫 `ground_truth`、`answer`、`label` 都行——只要奖励函数的形参同名即可。
+**只对 completion 的 token 求平均**：prompt 段的 `loss_mask = 0`，不参与。这点和第 1 章的 SFT 掩码完全一致 —— 模型不为「别人写的东西」负责。
 
-### 5.2 奖励函数：唯一必须自己写的代码
+### 7.6 一句话记住
 
-契约（三条，缺一不可）：
-
-```python
-def my_reward(completions, ground_truth, **kwargs) -> list[float]:
-    #  ① 形参：想用的字段名 = 数据集列名
-    #  ② 返回：list[float]，长度 == 这一批 completion 的数量
-    #  ③ 可以 async def（多个异步奖励会被并发 gather）
-    return [1.0 for _ in completions]
-```
-
-可用的关键字参数（按需挑）：
-
-| 参数 | 内容 |
-|---|---|
-| `prompts` | 这一批 prompt（标准格式是字符串，对话格式是 message dict） |
-| `completions` | 这一批模型输出（同上，对话格式是 `[{"role","content"}]` 列表的列表） |
-| `completion_ids` | token id 列表 |
-| `trainer_state` | 当前训练状态（可用于课程学习） |
-| `log_extra(col, values)` | 把额外列写进日志 |
-| `log_metric(name, value)` | 记录自定义指标 |
-| `environments` | 有 `environment_factory` 时，每个 completion 一个环境实例 |
-| 数据集其他列 | 自动作为 kwargs |
-
-### 5.3 三个真实可用的奖励函数
-
-见 [`code/rewards.py`](code/rewards.py)：
-
-```python
-def format_reward(completions, **kwargs):
-    pattern = r"^<think>.*?</think>\s*<answer>.*?</answer>$"
-    return [1.0 if re.match(pattern, c[0]["content"].strip(), re.DOTALL) else 0.0
-            for c in completions]
-
-def accuracy_reward(completions, ground_truth, **kwargs):
-    ...  # 抽 <answer>，和 ground_truth 比数值
-
-def length_penalty(completion_ids, **kwargs):
-    return [-0.001 * len(ids) for ids in completion_ids]
-```
-
-> 用 token 级奖励也可以，一个最小例子（文档原文）：
-> `def reward_func(completion_ids, **kwargs): return [float(len(ids)) for ids in completion_ids]` → `[2.0, 4.0]`
+> 损失 = 「这条答案比平均好多少」×「这个 token 的概率涨了多少」，涨过头就截断。
 
 ---
 
-## 6. 输入输出：一次训练步的完整张量流
+## 8. 代码与参数
 
-```
-┌─ 采样阶段（推理引擎，通常是 vLLM）─────────────────────────────┐
-│  input_ids:        [B, L_prompt]                              │
-│  generate(num_return_sequences=G, temperature=1.0)            │
-│  → completion_ids: [B*G, L_completion]                        │
-│  → completion_logprobs: [B*G, L_completion]   ← 旧策略的概率   │
-└───────────────────────────────────────────────────────────────┘
-                        │
-                        ▼
-┌─ 打分阶段（你的 Python 函数，不占 GPU）─────────────────────────┐
-│  rewards: [B*G]        ← 多个奖励求和 / 加权                    │
-│  A_i = (r_i - mean_group) / (std_group + ε)   → advantages: [B*G] │
-└───────────────────────────────────────────────────────────────┘
-                        │
-                        ▼
-┌─ 训练阶段（前向 + 反向）────────────────────────────────────────┐
-│  input_ids = cat(prompt, completion)   [B*G, L]                │
-│  labels    = -100 ... -100 ⧺ completion（或带 mask 的策略梯度）│
-│  forward → logits → log π_θ(y_t)                               │
-│  ratio = exp(logπ_θ - logπ_old)                                │
-│  loss  = -min(ratio·A, clip(ratio,1-ε,1+ε)·A).mean()           │
-└───────────────────────────────────────────────────────────────┘
-```
-
-### 一个数字例子（G=4）
-
-| 回答 | reward | 是否 > 均值(0.5) | advantage | 训练效果 |
-|---|---|---|---|---|
-| "…1081" | 1.0 | 是 | +1.0 | 概率 ↑ |
-| "…1081" | 1.0 | 是 | +1.0 | 概率 ↑ |
-| "…1000" | 0.0 | 否 | -1.0 | 概率 ↓ |
-| "…1000" | 0.0 | 否 | -1.0 | 概率 ↓ |
-
-> 如果 4 条**全对**（reward 都是 1.0），σ=0，所有 advantage=0 → **这一步什么也没学到**。
-> 这就是为什么题目难度要"刚好一半会一半不会"。
-
----
-
-## 7. 代码与参数
-
-完整脚本：[`code/train_grpo.py`](code/train_grpo.py)
+`code/train_grpo.py` 的六个阶段：读数据 → 模板 → 采样打分 → 算优势 → 训练 → 前后对比。
 
 ```python
-from datasets import load_dataset
-from trl import GRPOConfig, GRPOTrainer
-from rewards import accuracy_reward, format_reward
-
-dataset = load_dataset("json", data_files="../data/grpo_prompts.jsonl", split="train")
-
 args = GRPOConfig(
-    output_dir="./ckpt/grpo-math",
-    num_generations=8,          # ★ 每个 prompt 采几条
-    temperature=1.0,            # ★ 必须有随机性，否则组内全一样
-    max_completion_length=512,
-    loss_type="dapo",
-    scale_rewards="group",
-    beta=0.0,                   # 参考模型 KL 惩罚；0=不加载 ref model
-    learning_rate=1e-6,
-    per_device_train_batch_size=8,
-    num_train_epochs=1,
-    bf16=True,
+    num_generations=8,          # ★ G：每个 prompt 采几条（要能整除有效 batch）
+    temperature=1.0,            # ★ 采样温度，太低 → 8 条几乎一样，组内 std≈0
+    max_completion_length=256,  # ★ 单条答案 token 上限
+    beta=0.0,                   # ★ 0 = 不挂参考模型 KL
+    loss_type="dapo",           # ★ TRL 1.16 默认
+    scale_rewards="group",      # ★ 组内归一化，即 7.2 的公式
+    remove_unused_columns=False,# 奖励函数要读 ground_truth 列
 )
-
 trainer = GRPOTrainer(
     model="Qwen/Qwen2.5-0.5B-Instruct",
-    args=args,
-    train_dataset=dataset,
-    reward_funcs=[accuracy_reward, format_reward],
+    reward_funcs=[format_reward, accuracy_reward],   # 多条奖励会相加
+    args=args, train_dataset=ds,
 )
-trainer.train()
 ```
 
-### 关键参数
-
-| 参数 | 作用 | 默认 | 备注 |
-|---|---|---|---|
-| `num_generations` | 每个 prompt 采样条数 G | `8` | **必须整除有效 batch** |
-| `temperature` | 采样温度 | `1.0` | 太低→组内无差异；太高→全是噪声 |
-| `max_completion_length` | 单条回答上限 | `512` | 多轮场景=整个 episode 预算 |
-| `beta` | 对 ref model 的 KL 惩罚 | `0.0` | 设 >0 会多加载一个模型 |
-| `loss_type` | 损失变体 | `"dapo"` | 另有 `"grpo"`、`"dr_grpo"` 等 |
-| `scale_rewards` | 优势归一化方式 | `"group"` | 用组内 std；`"batch"` 用全 batch |
-| `num_iterations` | 每批数据复用几次 | `1` | >1 类似 PPO 的多 epoch |
-| `reward_weights` | 多个奖励的权重 | 均等 | **只作用于 `reward_funcs`**，不影响环境奖励 |
-| `mask_truncated_completions` | 截断样本是否屏蔽 | `False` | 长回答任务建议开 |
-| `steps_per_generation` | 一次生成支撑几步训练 | — | 提高生成利用率 |
-| `max_tool_calling_iterations` | 最多工具轮数 | — | 多轮 agent 必设 |
-
-> 显存提示：`num_generations=8` 意味着**同一时刻要放进 8 条 completion 做前向**，
-> 显存约等于 batch=8 的 SFT。0.5B 模型单卡 24GB 够用；4B 以上要考虑 `use_vllm` 或分卡。
-
----
-
-## 8. 产物与验收
-
-### 8.1 日志指标
-
-| 指标 | 含义 | 健康表现 |
+| 参数 | 默认 | 说明 |
 |---|---|---|
-| `reward` | 平均总奖励 | 稳步上升；后期趋平 |
-| `reward_std` | 组内奖励标准差 | **别长期为 0**（全对/全错就学不动） |
-| `kl` | 与 ref model 的 KL | `beta=0` 时为 0；`beta>0` 时应平缓上升 |
-| `entropy` | 输出熵 | 缓慢下降；骤降=塌缩 |
-| `completions/mean_length` | 平均长度 | 应稳定；持续变长=在钻空子 |
-| `completions/clipped_ratio` | 被截断比例 | 接近 0 |
-| `tools/call_frequency` | 平均工具调用次数 | 多轮任务核心观察项 |
-| `tools/failure_frequency` | 工具失败率 | 应下降 |
+| `num_generations` | 8 | G。必须整除「有效 batch = batch × 累积 × 卡数」 |
+| `temperature` | 1.0 | 太低组内无差异，太高全是废话 |
+| `beta` | 0.0 | >0 时挂参考模型 KL（多一份显存） |
+| `loss_type` | `"dapo"` | 还有 `"grpo"`、`"bnpo"` 等变体 |
+| `scale_rewards` | `"group"` | `"batch"` 则跨 prompt 归一化 |
+| `reward_weights` | — | 多条奖励的权重（只作用于 `reward_funcs`） |
+| `mask_truncated_completions` | False | 被截断的答案不计入损失 |
 
-### 8.2 判断"RL 真的起作用"的三个检查
+---
 
-```
-□ 留出集上准确率提升，而不只是训练 reward 提升（后者可能只是 reward hacking）
-□ reward_std 仍在合理范围（0.1~0.5），说明题目难度合适
-□ 输出变短或结构变清晰，而不是靠"多写点"骗分
-```
+## 9. 跑起来
 
-### 8.3 常见 reward hacking 形态
+脚本：[`code/train_grpo.py`](code/train_grpo.py)（约 640 行）
 
-| 现象 | 模型在干什么 | 修法 |
+### 9.1 两套数据，别混用
+
+| | 本地解剖样本 | 官方训练集 |
 |---|---|---|
-| 长度暴涨 | 用废话堆概率 | 加长度惩罚 / 开 `mask_truncated_completions` |
-| 格式分满分但答案错 | 只学会了 `<answer>` 标签 | 提高 accuracy 权重，或去掉纯格式奖励 |
-| 全部输出同一个模板 | 找到"安全但正确"的偷懒解 | 降 temperature？不，是提高题目多样性 |
-| 训练 reward 上升、留出集下降 | 过拟合奖励函数 | 换更强验证器 / 加正则 |
+| 位置 | `data/grpo_prompts.jsonl`（3 道题） | `--dataset trl-lib/DeepMath-103K`（10 万道可验证数学题） |
+| 用来看 | 模板怎么套、一组答案怎么打分、优势怎么算（第 6 节） | **训练效果**：held-out pass@1 有没有涨 |
+| 能不能训出东西 | 不能。3 道题 × 8 条采样，模型早就全对了，`std=0`，一点梯度都没有 | 能 |
+
+这道题最容易踩的坑就是「拿 3 道题训 GRPO」：组内全对 → 优势全 0 → loss 恒等于 0 → 你会以为脚本坏了。
+真正训练一定要用足够多、难度有梯度的题（DeepMath 里既有送分题也有竞赛题）。
+
+### 9.2 命令
+
+```bash
+cd 03-强化学习-GRPO/code
+
+# 只跑数据链路（只要 tokenizer，不需 GPU）
+python train_grpo.py --inspect
+
+# 不加载模型，把第 7 节的数字手算打一遍
+python train_grpo.py --explain-loss
+
+# 本地 3 道题冒烟（验证管线；大概率 std=0，这是正常的）
+python train_grpo.py --max-steps 2 --num-generations 4 --max-new 128
+
+# 真训练：官方题目 3000 道，留 100 道做 held-out pass@1 评测
+python train_grpo.py --dataset trl-lib/DeepMath-103K --limit 3000 --eval-size 100
+
+# 显存紧 / 想快：G=4、短答案
+python train_grpo.py --dataset trl-lib/DeepMath-103K --limit 3000 --num-generations 4 --max-new 192
+```
+
+依赖：`pip install "trl>=1.16.0" transformers datasets accelerate`
+
+分卡跑（大模型时）：`accelerate launch train_grpo.py`，`num_generations` 要能被卡数整除。
+
+### 9.3 怎么判断真的学会了
+
+| 指标 | 从哪来 | 健康 |
+|---|---|---|
+| **held-out pass@1** | 100 道没参与训练的题，训练前后各测一次 | 涨 10 个点以上（如 22% → 41%） |
+| **格式合规率** | 同上，判 `<think>…</think><answer>…</answer>` 是否完整 | 训练后接近 100% |
+| **reward 曲线** | 训练日志 | 缓慢上升，`reward_std` 保持在 0.2–0.7 |
+
+只看 reward 不靠谱：reward 涨了但 pass@1 不动，多半是模型学会了**骗奖励**（比如总是输出一种能拿格式分的模板），这正是下一节要看的坑。
 
 ---
 
-## 9. 常见坑
+## 10. 产物与验收
 
-| # | 坑 | 症状 | 解法 |
-|---|---|---|---|
-| 1 | `num_generations` 不整除有效 batch | 启动时报错 | 让 `batch × grad_accum × 卡数` 能被 G 整除 |
-| 2 | 题目全对或全错 | `reward_std=0`，`loss≈0` | 换难度适中的题，或做难度筛选 |
-| 3 | `temperature=0` | 8 条一模一样 | 保持 1.0 左右 |
-| 4 | 奖励返回 numpy / tensor | 报类型错或静默出错 | 显式 `float(...)` |
-| 5 | 奖励函数里改了模型状态 | 千奇百怪的 bug | 奖励函数要**纯函数**，只读输入 |
-| 6 | `ground_truth` 长度对不上 | 索引错位 | 相信 TRL 的广播，别自己 `repeat` |
-| 7 | 以为 `beta` 是"必须 >0" | 多花一张卡的显存 | GRPO 默认 0，先别加 |
-| 8 | 用训练集奖励判断成败 | 自我感觉良好 | 一定留验证集 |
+跑完看 `runs/grpo/report.md`：
 
----
+| 该看到的 | 正常的样子 | 不正常 |
+|---|---|---|
+| 优势表 | 同组内有正有负 | 全是 0 → 组内全对/全错 |
+| `reward` 曲线 | 缓慢上升 | 一直不动 / 忽然飙到 1 |
+| `reward_std` | 0.2~0.7 | ≈0 → 采样没差异；≈1.5 → 全对全错各一半 |
+| `kl` | `beta=0` 时无此项 | 突然飙高 → 学崩了 |
+| `completions/clipped_ratio` | < 0.3 | 接近 1 → 预算太小，答案全被截断 |
 
-## 10. 练习与自测
-
-1. **难度实验**：把 3 道题换成 3 道"远超模型能力"的题，跑 100 步，观察 `reward` 是否几乎不动。理解"全错 = 学不到"。
-2. **写一个只会被 hack 的奖励**：只给 `format_reward`、不给 `accuracy_reward`，看模型多久学会"格式完美但答案乱写"。
-3. **对比蒸馏**：同一批 prompt，一次用教师做蒸馏、一次用 accuracy 奖励做 GRPO，比较 200 步内验证集准确率曲线。
+**验收标准**：held-out pass@1 比训练前高 10 个点以上，且格式合规率接近 100%。
 
 ---
 
-## 11. 一句话带走
+## 11. 常见坑
 
-> GRPO 用"组内相对分数"替掉了教师和 critic，代价是信号极稀——**一条回答只有一个数**。
-> 而真实 agent 的一轮任务有几十次工具调用，只在最后给一个数太亏了。
-> 下一章：让模型**在环境里行动**，每轮都拿到反馈。
+1. **`num_generations` 不能整除有效 batch** → 报错或静默丢弃，改成 4/8 这类因子。
+2. **组内全对/全错** → `std=0`，`A` 全 0，白跑。降难度或加 `temperature`。
+3. **奖励函数返回单个 float** → 所有答案同分，等于没奖励。
+4. **忘了 `remove_unused_columns=False`** → `ground_truth` 被丢掉，奖励函数拿不到标准答案。
+5. **`max_completion_length` 太小** → 答案被截断，`<answer>` 永远闭合不了，格式分恒 0。
+6. **格式奖励和正确性奖励没区分开** → 模型学会「写空标签」骗分（reward hacking）。
+7. **`beta>0` 却忘了参考模型显存** → OOM，等于同时装两份模型。
+8. **用 `temperature=0.1` 采样 8 条** → 8 条几乎一样，组内没信号。
 
 ---
 
-[← 上一节：蒸馏](../02-蒸馏/README.md) · [总目录](../README.md) · [下一节：RL 环境 →](../04-RL环境/README.md)
+## 12. 练习与自测
+
+1. 把 `format_reward` 改成「`<answer>` 里必须是纯数字」，跑一下，看格式分为什么先升后平。
+2. 手算：一组奖励 `[2, 2, 1, 0]`，求 `A`。（答案：μ=1.25，σ=0.829，A≈[0.906, 0.906, -0.302, -1.509]）
+3. 把 `scale_rewards` 改成 `"batch"`，观察 `reward` 曲线有什么不同。
+4. 故意把 `num_generations` 设成 6（batch 8 不整除），看报错长什么样。
+
+**自测**（能答上来就算过）：
+
+- 为什么 GRPO 不需要 critic 模型？
+- `A_i` 里为什么要除标准差？
+- 一组全对时，梯度为什么是 0？
+- `ratio` 涨到 1.5 时，为什么损失不再变化？
+
+---
+
+下一章讲「环境」：奖励函数只有一次机会、一个分数；环境可以让模型**动手多轮**，每一步都看到结果。

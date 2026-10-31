@@ -313,24 +313,135 @@ JSONL 记录 ──chat template──► 一段纯文本 ──tokenizer──�
 
 ---
 
-## 6. 跑起来
+## 6. 损失怎么算（手算一遍）
 
-脚本：[`code/train_sft.py`](code/train_sft.py)（约 500 行，四个阶段全部可打印）
+第 5 节讲的是「数据变成了什么」，这一节讲「这些数字最后怎么变成一个 loss」。
+`python train_sft.py --explain-loss` 会把下面的表原样打印出来（不加载模型，1 秒跑完）。
+
+### 6.1 一个位置：交叉熵就是「正确 token 概率的负对数」
+
+模型在每个位置吐出 151936 个分数（logits），softmax 之后变成一个概率分布。
+我们只关心**正确那个 token** 拿到了多少概率 `p`：
+
+```
+  loss_这一个位置 = -ln(p)
+```
+
+| 正确 token 的概率 `p` | `-ln(p)` | 直觉 |
+|---|---|---|
+| 0.99 | 0.010 | 几乎确定 → 几乎不罚 |
+| 0.90 | 0.105 | 很确定 |
+| 0.50 | 0.693 | 在犹豫 |
+| 0.20 | 1.609 | 猜错了 |
+| 0.01 | 4.605 | 完全跑偏 → 罚得很重 |
+
+这张表解释了 loss 的量级：SFT 正常的 loss 从 **2 左右降到 0.3 左右**，就是「正确 token 的平均概率从约 0.13 涨到约 0.74」。
+
+### 6.2 一条轨迹：166 个位置各算一次，再平均
+
+假设某条轨迹里 5 个被监督的 token，模型给它们的概率分别是：
+
+```
+  token 1: p = 0.98   →   -ln(p) = 0.020
+  token 2: p = 0.95   →   -ln(p) = 0.051
+  token 3: p = 0.90   →   -ln(p) = 0.105
+  token 4: p = 0.80   →   -ln(p) = 0.223
+  token 5: p = 0.50   →   -ln(p) = 0.693
+  ─────────────────────────────────────────
+  平均 = (0.020+0.051+0.105+0.223+0.693)/5 = 0.218
+```
+
+**只有这 5 个位置参与**。真实那条轨迹是 166 个位置，公式一样：
+
+```
+  loss = (1 / 166) · Σ_{t ∈ 监督段} -ln p(token_t)
+```
+
+分母是 **166 而不是 650** —— 这就是 5.3 节那张掩码条的真正作用。分母搞错（比如忘了 `assistant_only_loss`）会让 loss 数值凭空小一半，看着像「学得特别好」。
+
+### 6.3 「右移一位」到底是什么意思
+
+语言模型在位置 `t` 输出的是**下一个** token 的分布，所以算 loss 时要把 label 往左错一位：
+
+```
+  位置 0   输入 <|im_start|>       → 预测下一个：assistant
+  位置 1   输入 assistant          → 预测下一个：换行
+  位置 2   输入 换行                → 预测下一个：先
+  位置 3   输入 先                  → 预测下一个：调
+  位置 4   输入 调                  → 预测下一个：用
+```
+
+所以 `labels[t]` 就是 `input_ids[t+1]`，整条 label 序列等于「输入左移一位、末尾补 -100」：
+
+```
+  input_ids :  <|im_start|>  assistant  换行  先  调  用  </tool_call>  ...
+  labels    :  assistant     换行       先    调  用  </tool_call>  ...  -100
+  loss_mask :  0             0          0     1   1   1          1       0
+```
+
+只有 `loss_mask = 1` 的位置进入损失；`0` 的位置（system、user、工具返回、padding）全部跳过。
+
+被 mask 的位置（prompt、tool 结果、padding）把 label 写成 `-100`，框架直接跳过它们 —— **不参与求和，也不参与平均**。
+
+### 6.4 整个 batch
+
+一个 batch 里 2 条样本、每条 166 个监督位置：
+
+```
+  loss = ( Σ_{i=1..2} Σ_{t ∈ 监督段} -ln p_{i,t} ) / (2 × 166)
+```
+
+梯度是最朴素的那种：**每个被监督的 token 各自把「自己这个 token 的概率」往上推一点**，互不干扰。所以：
+
+- 想让它学会某种 token 序列 → 那段必须是 `label != -100`；
+- 不想让它学（比如工具返回的 JSON）→ 那段必须 `-100`；
+- 数量少的片段（比如 3 个 token 的 `<|im_end|>`）在 166 个位置里权重很小，想让模型「学会停」，得靠足够多的样本重复。
+
+### 6.5 一句话记住
+
+> **loss = 「被监督的每个 token，模型给它的概率有多低」的平均。**
+> 掩码决定**分子和分母里算哪些位置**，右移决定**每个位置在预测谁**。
+
+---
+
+## 7. 跑起来
+
+脚本：[`code/train_sft.py`](code/train_sft.py)（约 660 行，四个阶段 + 训练前/后评测全部可打印）
+
+### 7.1 两套数据，别混用
+
+| | 本地解剖样本 | 官方训练集 |
+|---|---|---|
+| 位置 | `data/sft_agent_trace.jsonl`（2 条） | `--dataset trl-lib/Capybara`（1.6 万条对话） |
+| 用来看 | 模板长什么样、掩码打在哪、token 怎么变 label | **训练效果** |
+| 能不能训出能力 | 不能。2 条样本训 20 步只会把这 2 条背下来 | 能，配 held-out 评测就能看到 -ln p 下降 |
+
+第 5 节那些数字（650 token / 166 监督 / 24.4%）都来自解剖样本，它的作用是让你**看清数据处理**，不是让你相信训练有效。
+要看效果，就得用官方数据集或者你自己采集的上千条轨迹。
+
+### 7.2 命令
 
 ```bash
 cd 01-监督微调-SFT/code
 
-# ① 只跑数据链路：不需要 GPU、不需要 trl（只要 transformers），先确认数据没写错
+# (1) 只跑数据链路：不需要 GPU、不需要 trl（只要 transformers），先确认数据没写错
 python train_sft.py --inspect
 
-# ② 完整流程：数据链路 + 训练 + 训练前后对比 + 写报告
-python train_sft.py
+# (1).5 不加载模型，把第 6 节的交叉熵手算打一遍
+python train_sft.py --explain-loss
 
-# 常用变体
-python train_sft.py --epochs 1 --max-steps 20        # 先冒烟跑通
-python train_sft.py --model Qwen/Qwen3-1.7B          # 换基座
-python train_sft.py --no-eval                        # 跳过生成对比（省时间）
+# (2) 用本地 2 条解剖样本跑通全流程（验证管线，不代表效果）
+python train_sft.py --epochs 1 --max-steps 20
+
+# (3) 真正训练：官方数据集 2000 条，留 100 条做 held-out 评测
+python train_sft.py --dataset trl-lib/Capybara --limit 2000 --eval-size 100
+
+# 单卡 24G 的稳妥配置
+python train_sft.py --dataset trl-lib/Capybara --limit 5000 --eval-size 100 \
+    --model Qwen/Qwen3-0.6B --epochs 1 --gen-tokens 160
 ```
+
+`--limit` 取多少？先 2000 条跑通（约 20–40 分钟），确认 -ln p 在降，再加到 5000–20000。
 
 依赖（一次装完）：
 
@@ -341,12 +452,24 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 | 产物 | 内容 |
 |---|---|
-| `runs/sft/report.md` | 总报告：环境、loss 表、ASCII 损失图、训练前后对比 |
-| `runs/sft/tokens.txt` | 全量 650 行 token / label / mask 表 |
+| `runs/sft/report.md` | 总报告：环境、held-out 前/后 -ln p、loss 表、ASCII 损失图、生成对比 |
+| `runs/sft/tokens.txt` | 全量 token / label / mask 表（解剖样本，650 行） |
 | `runs/sft/loss.csv` | 每步 loss，可拿去画图 |
-| `ckpt/sft-agent/` | 训练好的权重，下一章/下一章 RL 的起点 |
+| `ckpt/sft-agent/` | 训练好的权重，后面几步的起点 |
 
-### 6.1 训练时终端长这样
+### 7.3 怎么判断「真的有效果」
+
+别只看 loss 曲线，看这三个数（report.md 里都有）：
+
+| 指标 | 从哪来 | 健康 |
+|---|---|---|
+| **held-out -ln p** | 100 条没参与训练的样本，训练前后各算一次 | 下降 15% 以上（如 2.1 → 1.4） |
+| **token_acc** | 训练日志 | 0.4 → 0.8 以上 |
+| **生成对比** | 同样的 prompt，前后各生成一次 | 训练后能套上 `<tool_call>{…}</tool_call>` 格式 |
+
+前两个是数，第三个是眼睛；三个都变好才叫学会了。
+
+### 7.4 训练时终端长这样
 
 `--inspect` 之后进入训练，每个 logging 步打印一行（`logging_steps=1`）：
 
@@ -370,7 +493,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | `token_acc` | 稳步升（0.4 → 0.8+） | 停在 0.3 附近 → 数据太少/太难 |
 | `grad` | 平稳（0.1–5） | 尖峰 >20 → 梯度爆炸，开 `max_grad_norm` 或降 lr |
 
-### 6.2 损失图（终端里也能看）
+### 7.5 损失图（终端里也能看）
 
 `report.md` 里会附一张 ASCII 走势图，不装 matplotlib 也能判断"到底在不在学"：
 
@@ -389,7 +512,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 <!-- 待回填：真实损失图 -->
 
-### 6.3 训练前后对比
+### 7.6 训练前后对比
 
 同一批 prompt，训练前（基座）和训练后（SFT 完）各生成一次：
 
@@ -415,7 +538,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ---
 
-## 7. 参数速查
+## 8. 参数速查
 
 | 参数 | 作用 | 建议 |
 |---|---|---|
@@ -441,9 +564,9 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ---
 
-## 8. 产物与验收
+## 9. 产物与验收
 
-### 8.1 训练日志里看什么
+### 9.1 训练日志里看什么
 
 | 指标 | 含义 | 健康表现 |
 |---|---|---|
@@ -453,7 +576,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | `num_tokens` | 累计训练 token 数 | 用来估"每个 epoch 实际学了多少" |
 | `grad_norm` | 梯度范数 | 别持续爆炸（>10） |
 
-### 8.2 离线自测（比 loss 更可信）
+### 9.2 离线自测（比 loss 更可信）
 
 ```
 □ 格式：会不会正确输出 tool_call 结构（而不是把 JSON 写进正文）
@@ -461,14 +584,14 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 □ 停止：会不会在该结束时输出终止符，而不是无限调用工具
 ```
 
-### 8.3 产物
+### 9.3 产物
 
 - `ckpt/sft-agent/`：可继续做蒸馏 / RL 的**起点模型**
 - `runs/sft/report.md`：这次训练的证据（loss、前后对比），也是排查问题的第一手材料
 
 ---
 
-## 9. 常见坑
+## 10. 常见坑
 
 | # | 坑 | 症状 | 解法 |
 |---|---|---|---|
@@ -484,7 +607,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ---
 
-## 10. 练习与自测
+## 11. 练习与自测
 
 1. **看掩码**：跑 `python train_sft.py --inspect`，打开 `runs/sft/tokens.txt`，找到第 4 条消息（`tool_response`）——确认它的每一行都是 `0`。再找到最后一条 assistant 的 `<think>`——确认它被监督了。
 2. **改数据**：加第 3 条轨迹，让它**先跑测试看到报错、再读文件**（顺序与现有样例相反），重跑，看掩码条的形状有没有变、模型有没有学到这个顺序。
@@ -493,7 +616,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ---
 
-## 11. 一句话带走
+## 12. 一句话带走
 
 > SFT 教的是**"照着做"**：格式、顺序、语气都能学，但它永远看不到自己犯错，所以学不会**"错了怎么办"**。
 > 这正是下一章（蒸馏）和第三章（RL）要补的洞。

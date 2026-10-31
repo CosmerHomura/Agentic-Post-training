@@ -49,29 +49,30 @@ GPU-1 (trainer):      [训练步1][训练步2][训练步3][训练步4][训练步
 
 ## 4. 完整架构
 
+## 4. 完整架构
+
 ```
-┌──────────────────────────── 训练侧（GPU-1）────────────────────────────┐
-│  AsyncGRPOTrainer                                                      │
-│    ① 从队列取 (prompt, completions, rewards, advantages, logprobs)     │
-│    ② 前向 + 反向，算 clipped 策略梯度                                   │
-│    ③ 每 weight_sync_steps 步：把新权重通过 NCCL 推给 vLLM               │
-└───────────────▲───────────────────────────────────────┬────────────────┘
-                │ 队列（进程间）                         │ 权重同步
-┌───────────────┴───────────────────────────────────────▼────────────────┐
-│  rollout worker（后台进程，CUDA_VISIBLE_DEVICES="" —— 不占 GPU）        │
-│    ① 取 prompt → 发给 vLLM 生成                                  │
-│    ② 打奖励分（reward_funcs / rollout_reward_fn）                       │
-│    ③ 组内标准化算优势                                                   │
-│    ④ 入队                                                               │
-└───────────────▲────────────────────────────────────────────────────────┘
-                │ HTTP
-┌───────────────┴──────────────┐      ┌──────────────────────────────────┐
-│  vLLM server（GPU-0）         │◀─────│  Harbor（远程沙箱编排）           │
-│  · 生成 completion            │      │  · 每个 rollout 起一个沙箱        │
-│  · 返回 token id + logprobs   │      │  · 跑 mini-swe-agent / opencode   │
-└───────────────────────────────┘      │  · 抓 TrainingTrace 回传          │
-                                       └──────────────────────────────────┘
+GPU-1 · 训练侧
+  AsyncGRPOTrainer
+    1) 从队列取 (prompt, completions, rewards, advantages, logprobs)
+    2) 前向 + 反向，算 clipped 策略梯度
+    3) 每 weight_sync_steps 步：新权重经 NCCL 推给 vLLM
+        ▲ 样本入队（进程间队列）          │ 权重同步
+        │                                ▼
+CPU · rollout worker（CUDA_VISIBLE_DEVICES="" ，不占 GPU）
+    1) 取 prompt → 发给 vLLM 生成
+    2) 打奖励分（reward_funcs / rollout_reward_fn）
+    3) 组内标准化算优势
+    4) 入队
+        │ HTTP
+        ▼
+GPU-0 · vLLM server                 Harbor（远程沙箱编排）
+  · 生成 completion                 · 每个 rollout 起一个沙箱
+  · 返回 token id + logprobs        · 跑 mini-swe-agent / opencode / claude-code
+                                    · 抓 TrainingTrace 回传
 ```
+
+三条链路各自的作用：**队列**解决"快慢不匹配"，**NCCL 权重同步**解决"vLLM 里是旧权重"，**HTTP + Harbor** 解决"episode 在哪跑"。
 
 ### 关键设计：**同一个模型，两个身份**
 
@@ -165,18 +166,18 @@ mask:       0    0    1    0    1
 ### 8.1 起服务（三个进程）
 
 ```bash
-# ① Harbor：负责沙箱 + harness + trace 抓取
+# (1) Harbor：负责沙箱 + harness + trace 抓取
 MAX_CONCURRENT_ENVS=9 openenv harbor serve \
   --dataset <hf-dataset> --port 8200 --capture-port 8300 --expose gradio
 
-# ② vLLM：生成 + 权重接收
+# (2) vLLM：生成 + 权重接收
 vllm serve Qwen/Qwen3-4B \
   --enable-auto-tool-choice --tool-call-parser hermes \
   --logprobs-mode processed_logprobs \
   --return-tokens-as-token-ids \
   --weight-transfer-config '{"backend":"nccl"}'
 
-# ③ 训练
+# (3) 训练
 CUDA_VISIBLE_DEVICES=1 accelerate launch train_async_grpo.py
 ```
 
@@ -299,17 +300,17 @@ worker = HarnessRolloutWorker(
 
 ```
 你有「正确的完整轨迹」吗？
- ├─ 有 ──────────────────────────────▶ ① SFT（最便宜、最稳，先做这个）
+ ├─ 有 ──────────────────────────────▶ 1) SFT（最便宜、最稳，先做这个）
  └─ 没有
      ├─ 有一个更强的教师模型吗？
-     │    ├─ 有 ──────────────────────▶ ② 蒸馏（信号密、样本省）
+     │    ├─ 有 ──────────────────────▶ 2) 蒸馏（信号密、样本省）
      │    └─ 没有
      │        ├─ 能写出「判断对错」的规则吗？
-     │        │    ├─ 能，且一轮就够 ──▶ ③ GRPO + 奖励函数
-     │        │    └─ 能，但要动手试 ──▶ ④ GRPO + 环境
+     │        │    ├─ 能，且一轮就够 ──▶ 3) GRPO + 奖励函数
+     │        │    └─ 能，但要动手试 ──▶ 4) GRPO + 环境
      │        └─ 只能事后看结果
      │             └─ 有真实 agent 壳吗？
-     │                  └─ 有 ────────▶ ⑤ 异步 GRPO + Harness
+     │                  └─ 有 ────────▶ 5) 异步 GRPO + Harness
      └─ 什么都没有 ──▶ 回去先造数据 / 造验证器
 ```
 

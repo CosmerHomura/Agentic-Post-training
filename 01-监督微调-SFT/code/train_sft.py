@@ -11,8 +11,15 @@
 用法
 ----
     python train_sft.py --inspect      # 只跑数据链路（不需要 GPU，甚至不需要 trl/torch）
-    python train_sft.py                # 数据链路 + 训练 + 训练前后对比 + 写报告
-    python train_sft.py --epochs 1 --model Qwen/Qwen3-0.6B --max-steps 20
+    python train_sft.py --dataset trl-lib/Capybara --limit 2000   # 用官方数据集真训
+    python train_sft.py                # 用本地 2 条解剖样本跑一遍全流程
+    python train_sft.py --epochs 1 --model Qwen/Qwen3-1.7B --max-steps 200
+
+本地那 2 条轨迹只用来「看清数据长什么样」；要看训练效果，就得用官方数据集
+（`trl-lib/Capybara`，对话格式，1.6 万条）或者你自己的 agent 轨迹。
+
+评测：前 --eval-size 条留出来不训练，训练前后各算一次 **held-out 上的平均 -ln p**
+（越小说明模型越能预测人类答案），再跑几个生成样例做肉眼对照。
 
 产物
 ----
@@ -32,6 +39,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -147,11 +155,42 @@ def build_masks(tok, messages, tools):
 
 
 # ============================================================ 1. 读数据
-def stage_read(path: Path):
-    hr("阶段 1 / 4   读 JSONL")
-    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    print(f"  文件：{path}")
-    print(f"  行数：{len(records)}")
+def load_records(args):
+    """
+    返回 (训练集, 评测集, 来源说明)。
+
+    --dataset 给 HF 数据集名时走官方数据（Capybara 的列叫 messages，和本地 jsonl 同构）；
+    否则读本地 jsonl —— 那 2 条是「解剖样本」，用来看模板和掩码，不足以训练出能力。
+    """
+    if args.dataset:
+        from datasets import load_dataset
+
+        print(f"  从 HF 加载：{args.dataset}（split={args.split}）")
+        try:
+            ds = load_dataset(args.dataset, split=args.split)
+        except Exception as e:  # 网络/鉴权/名字错，给一句人话
+            raise SystemExit(
+                f"  加载失败：{e}\n"
+                f"  国内网络先设 HF_ENDPOINT=https://hf-mirror.com 再跑；"
+                f"或者用 --data 指向本地 jsonl。"
+            ) from e
+        if args.limit:
+            ds = ds.select(range(min(args.limit, len(ds))))
+        recs = [{"messages": r["messages"], "tools": r.get("tools")} for r in ds]
+        src = f"{args.dataset}（取前 {len(recs)} 条）"
+    else:
+        path = Path(args.data)
+        recs = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+        src = str(path)
+
+    n_eval = min(args.eval_size, max(1, len(recs) // 10)) if len(recs) >= 4 else 0
+    return recs[n_eval:], recs[:n_eval], src
+
+
+def stage_read(path, records, eval_records):
+    hr("阶段 1 / 4   读数据")
+    print(f"  来源：{path}")
+    print(f"  训练：{len(records)} 条    评测（held-out）：{len(eval_records)} 条")
     print()
     print(f"  {'#':>2}  {'role':<10} {'content 长度':>12}  tool_calls")
     print("  " + "-" * 62)
@@ -164,7 +203,18 @@ def stage_read(path: Path):
     for t in records[0].get("tools", []):
         f = t["function"]
         print(f"    - {f['name']}({', '.join(f['parameters'].get('properties', {}))})  # {f['description']}")
+    if not records[0].get("tools"):
+        print("    （这条没有工具定义 —— 官方 Capybara 就是纯对话，想要 agent 轨迹得自己采集）")
     return records
+
+
+def answer_span(rec):
+    """最后一条 assistant 的 content 长度，用来在评测里判断「模型有没有学会那种格式」。"""
+    for m in reversed(rec["messages"]):
+        if m["role"] == "assistant":
+            return len(m.get("content") or "")
+    return 0
+
 
 
 # ============================================================ 2. 套模板
@@ -281,7 +331,7 @@ def stage_batch(tok, records):
 
 
 # ============================================================ 5. 训练
-def train(model_name: str, records, epochs: float, max_steps: int | None, bf16: bool):
+def train(model_name, records, eval_records, epochs, max_steps, bf16, before_hook=None):
     hr("阶段 5   训练（每个 logging 步打印 loss）")
     import torch
     from datasets import Dataset
@@ -289,6 +339,11 @@ def train(model_name: str, records, epochs: float, max_steps: int | None, bf16: 
     from trl import SFTConfig, SFTTrainer
 
     ds = Dataset.from_list([{"messages": r["messages"], "tools": r.get("tools")} for r in records])
+    eval_ds = (
+        Dataset.from_list([{"messages": r["messages"], "tools": r.get("tools")} for r in eval_records])
+        if eval_records
+        else None
+    )
 
     has_cuda = torch.cuda.is_available()
     if not has_cuda:
@@ -342,6 +397,7 @@ def train(model_name: str, records, epochs: float, max_steps: int | None, bf16: 
         model=model_name,
         args=args,
         train_dataset=ds,
+        eval_dataset=eval_ds,
         callbacks=[printer],
     )
 
@@ -350,13 +406,27 @@ def train(model_name: str, records, epochs: float, max_steps: int | None, bf16: 
     print(f"  device：{trainer.model.device}   bf16：{bf16}")
     print()
 
+    # ---- 训练前：先在 held-out 上量一次，并抓生成样例 ----
+    pre = {}
+    if eval_ds is not None:
+        pre = trainer.evaluate()
+        print(f"  训练前 held-out：loss {pre['eval_loss']:.4f}  （平均 -ln p，越小越好）")
+    before = before_hook(trainer.model) if before_hook else []
+
+    print()
     result = trainer.train()
     trainer.save_model(args.output_dir)
+
+    # ---- 训练后 ----
+    post = trainer.evaluate() if eval_ds is not None else {}
+    if post:
+        print(f"  训练后 held-out：loss {post['eval_loss']:.4f}")
+    after = before_hook(trainer.model) if before_hook else []
 
     print()
     print(f"  训练结束：{result.metrics}")
     print(f"  权重已存：{args.output_dir}")
-    return trainer, printer.rows
+    return trainer, printer.rows, pre, post, before, after
 
 
 def chart(rows, width=46):
@@ -378,10 +448,53 @@ def chart(rows, width=46):
 
 
 # ============================================================ 6. 训练前后对比
-EVAL_CASES = [
-    ("同一类任务（修 bug）", 0),
-    ("同格式新任务（补乘除）", 1),
-]
+def eval_sets(eval_records, k=2):
+    """
+    拿 held-out 里的真实样本做生成对比：把最后一条 assistant 去掉当 prompt，
+    让模型自己写那一段 —— 它写出来的东西才是「学会了没有」的直接证据。
+    """
+    cases = []
+    for rec in eval_records[:k]:
+        msgs = rec["messages"]
+        cut = len(msgs) - 1
+        while cut > 0 and msgs[cut - 1]["role"] != "user":
+            cut -= 1
+        prompt = msgs[:cut] if cut > 0 else msgs[:1]
+        xpected = (msgs[cut].get("content") or "") if cut < len(msgs) else ""
+        cases.append((prompt, rec.get("tools"), xpected))
+    return cases
+
+
+def toolcall_json_ok(text: str) -> bool:
+    """输出里有没有一个能 json.loads 的 <tool_call>{...}</tool_call> —— agent 场景的格式分。"""
+    m = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.S)
+    if not m:
+        return False
+    try:
+        json.loads(m.group(1))
+        return True
+    except Exception:
+        return False
+
+
+def stage_before_after(tok, model, eval_records, tag, max_new_tokens=220):
+    hr(f"阶段 6   生成对比（{tag}，held-out 样本）")
+    outs, ok = [], 0
+    for messages, tools, expected in eval_sets(eval_records):
+        text = generate(tok, model, messages, tools, max_new_tokens)
+        hit = toolcall_json_ok(text) if tools else bool(text.strip())
+        ok += int(hit)
+        print(f"\n  ── prompt：{(messages[-1].get('content') or '')[:60]} ──")
+        print("  模型输出：")
+        for line in text.strip().splitlines()[:12]:
+            print(f"    {line}")
+        outs.append(
+            {"prompt": messages[-1].get("content", ""), "output": text.strip(),
+             "expected": expected[:200], "format_ok": hit}
+        )
+    if outs:
+        print(f"\n  {tag}：格式合规 {ok}/{len(outs)}（{'tool_call JSON 可解析' if outs[0] and tools else '非空输出'}）")
+    return outs
 
 
 def generate(tok, model, messages, tools, max_new_tokens=220):
@@ -402,30 +515,6 @@ def generate(tok, model, messages, tools, max_new_tokens=220):
     return tok.decode(out[0][input_ids.shape[1] :], skip_special_tokens=True)
 
 
-def eval_sets(records):
-    """把轨迹里的「前半段」当作 prompt：system + user（+ 也许还有一轮工具结果）。"""
-    cases = []
-    for name, idx in EVAL_CASES:
-        rec = records[idx]
-        msgs = [m for m in rec["messages"] if m["role"] in ("system", "user")][:2]
-        cases.append((name, msgs, rec.get("tools")))
-    return cases
-
-
-def stage_before_after(tok, model, records, tag, max_new_tokens=220):
-    hr(f"阶段 6   生成对比（{tag}）")
-    outs = []
-    for name, messages, tools in eval_sets(records):
-        text = generate(tok, model, messages, tools, max_new_tokens)
-        print(f"\n  ── {name} ──")
-        print(f"  prompt（最后一句）：{messages[-1]['content'][:60]}")
-        print("  模型输出：")
-        for line in text.strip().splitlines()[:12]:
-            print(f"    {line}")
-        outs.append({"case": name, "prompt": messages[-1]["content"], "output": text.strip()})
-    return outs
-
-
 # ============================================================ 7. 报告
 def write_report(meta, before, after, rows):
     RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -437,10 +526,11 @@ def write_report(meta, before, after, rows):
         md.append(f"| {r['step']} | {r['loss']:.4f} | {r['lr']:.2e} | {r['grad_norm']:.3f} | {r['tok_acc']:.3f} |")
     if rows:
         md += ["", "```", chart(rows), "```"]
-    md += ["", "## 训练前 vs 训练后", ""]
+    md += ["", "## 训练前 vs 训练后（held-out 生成）", ""]
     for b, a in zip(before, after):
-        md += [f"### {b['case']}", "", f"**prompt**：`{b['prompt']}`", "", "**训练前**：", "```", b["output"], "```", ""]
+        md += [f"### prompt：`{b['prompt'][:120]}`", "", "**训练前**：", "```", b["output"], "```", ""]
         md += ["**训练后**：", "```", a["output"], "```", ""]
+        md += [f"- 参考（数据里的真实答案）：`{b['expected']}`", f"- 训练后格式合规：{a['format_ok']}", ""]
     (RUN_DIR / "report.md").write_text("\n".join(md), encoding="utf-8")
     (RUN_DIR / "report.json").write_text(
         json.dumps({"meta": meta, "loss": rows, "before": before, "after": after}, ensure_ascii=False, indent=2),
@@ -455,11 +545,51 @@ def write_report(meta, before, after, rows):
     print("  把 report.md 发给我，我来把真实输出补进教程。")
 
 
+# ============================================================ 手算损失
+def explain_loss() -> None:
+    """不加载模型，把 token 级交叉熵一项一项算出来。"""
+    import math
+
+    hr("手算一遍：SFT 的损失到底是什么（交叉熵）")
+    print("  模型在每个位置输出一整个词表的分数（logits），softmax 之后是这个 token 的概率。")
+    print("  损失 = 正确 token 的 -ln(概率)。猜得越准，损失越小。")
+    print()
+    print(f"  {'正确 token 的概率':>16}  {'-ln(p)':>8}   直觉")
+    print("  " + "-" * 56)
+    for p, note in [
+        (0.99, "几乎确定 → 几乎不罚"),
+        (0.90, "很确定"),
+        (0.50, "在犹豫"),
+        (0.20, "猜错了"),
+        (0.01, "完全跑偏 → 罚得很重"),
+    ]:
+        print(f"  {p:>16.2f}  {-math.log(p):>8.3f}   {note}")
+    print()
+    print("  一条轨迹里 5 个被监督的 token，假设模型给它们这些概率：")
+    print()
+    ps = [0.98, 0.95, 0.90, 0.80, 0.50]
+    for i, p in enumerate(ps):
+        print(f"    token {i + 1}: p = {p:.2f}   →   -ln(p) = {-math.log(p):.3f}")
+    mean = sum(-math.log(p) for p in ps) / len(ps)
+    print(f"    平均 = {mean:.3f}   ← 这就是 loss（这个 batch 里所有被监督 token 的平均）")
+    print()
+    print("  关键三点：")
+    print("   1) 只有 label != -100 的位置参与 —— prompt 和 tool 结果不算（第 5 节的掩码条）。")
+    print("   2) 位置 t 的预测要和位置 t+1 的 token 比（右移一位），不是和它自己比。")
+    print("   3) 损失对所有被监督 token 取平均，所以长轨迹里的短片段会被稀释。")
+
+
 # ============================================================ main
 def main():
+    global _TOK
     ap = argparse.ArgumentParser()
     ap.add_argument("--inspect", action="store_true", help="只跑数据链路，不训练")
+    ap.add_argument("--explain-loss", action="store_true", help="玩具数字手算交叉熵（不需 GPU）")
     ap.add_argument("--data", default=str(DATA_PATH))
+    ap.add_argument("--dataset", default=None, help="HF 数据集名，如 trl-lib/Capybara（优先于 --data）")
+    ap.add_argument("--split", default="train")
+    ap.add_argument("--limit", type=int, default=2000, help="从官方数据集取前多少条")
+    ap.add_argument("--eval-size", type=int, default=100, help="留出多少条做 held-out 评测")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--epochs", type=float, default=3)
     ap.add_argument("--max-steps", type=int, default=None)
@@ -467,6 +597,10 @@ def main():
     ap.add_argument("--gen-tokens", type=int, default=220, help="生成对比时最多新生成多少 token")
     ap.add_argument("--fp32", action="store_true", help="不用 bf16")
     args = ap.parse_args()
+
+    if args.explain_loss:
+        explain_loss()
+        return
 
     hr("阶段 0 / 4   环境")
     import transformers
@@ -485,9 +619,10 @@ def main():
         print(f"  torch         {torch.__version__}   cuda={torch.cuda.is_available()}")
     except ImportError:
         print("  torch         (未安装)")
-    print(f"  数据          {args.data}")
+    print(f"  数据          {args.dataset or args.data}")
 
-    records = stage_read(Path(args.data))
+    records, eval_records, src = load_records(args)
+    stage_read(src, records, eval_records)
 
     from transformers import AutoTokenizer
 
@@ -497,29 +632,41 @@ def main():
     print(f"\n  tokenizer     {type(tok).__name__}  vocab={len(tok)}  "
           f"chat_template={len(tok.chat_template or '')} 字符")
 
+    # 解剖：始终用第一条训练样本，保证「模板/token/掩码」讲的是同一份数据
     stage_template(tok, records[0])
     stage_tokens(tok, records[0])
-    stage_batch(tok, records)
+    stage_batch(tok, records[:2])
 
     if args.inspect:
         print("\n  --inspect 模式结束（没有训练）。去掉 --inspect 就跑完整流程。")
         return
 
-    trainer, rows = train(args.model, records, args.epochs, args.max_steps, bf16=not args.fp32)
+    def grab_samples(model):
+        model.eval()
+        return stage_before_after(tok, model, eval_records, "生成", args.gen_tokens)
+
+    trainer, rows, pre, post, before, after = train(
+        args.model,
+        records,
+        [] if args.no_eval else eval_records,
+        args.epochs,
+        args.max_steps,
+        bf16=not args.fp32,
+        before_hook=None if args.no_eval else grab_samples,
+    )
     if rows:
         print("\n" + chart(rows))
-
-    before = after = []
-    if not args.no_eval:
-        model = trainer.model
-        model.eval()
-        before = stage_before_after(tok, model, records, "训练前", args.gen_tokens)
-        after = stage_before_after(tok, model, records, "训练后", args.gen_tokens)
+    if pre and post:
+        d = pre["eval_loss"] - post["eval_loss"]
+        print(f"\n  held-out -ln p：{pre['eval_loss']:.4f} → {post['eval_loss']:.4f}"
+              f"（{'下降' if d > 0 else '上升'} {abs(d):.4f}）")
 
     meta = {
         "模型": args.model,
-        "数据": f"{args.data}（{len(records)} 条）",
+        "数据": f"{src}（训练 {len(records)} 条 / 评测 {len(eval_records)} 条）",
         "epochs": args.epochs,
+        "held-out -ln p（训练前）": f"{pre['eval_loss']:.4f}" if pre else "未评测",
+        "held-out -ln p（训练后）": f"{post['eval_loss']:.4f}" if post else "未评测",
         "耗时(s)": round(trainer.state.log_history[-1].get("train_runtime", 0), 1)
         if trainer.state.log_history
         else "n/a",

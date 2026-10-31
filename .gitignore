@@ -19,6 +19,7 @@ wandb/
 # 模型 / 数据集缓存
 hf/
 hf-cache/
+.hfcache/
 .cache/
 
 # 站点临时件（build.py 生成的 index.html 要提交，剩下的不要）
@@ -27,6 +28,7 @@ _site/_drawer.html
 _site/_diag.html
 _site/_dark.html
 _site/_check.js
+_site/_p_*.html
 
 # 系统垃圾
 .DS_Store
