@@ -19,8 +19,8 @@ from common import (LOG_EVERY, safe_save, CKPT_DIR, RUN_DIR, csv_append,
 
 
 def train(rows, student_name, teacher_name, epochs: float, max_steps: int | None,
-          beta: float, temperature: float, gen_tokens: int, plot_every: int = 20,
-          before_hook=None, tb: bool = False):
+          beta: float, temperature: float, gen_tokens: int, plot_every: int = 0,
+          before_hook=None, tb: bool = False, lr: float = 1e-6):
     hr("阶段 6   训练（学生每个 logging 步打印一次 loss）")
     import torch
     from datasets import Dataset
@@ -128,7 +128,7 @@ def train(rows, student_name, teacher_name, epochs: float, max_steps: int | None
         max_steps=max_steps if max_steps else -1,
         per_device_train_batch_size=2,
         gradient_accumulation_steps=8,
-        learning_rate=1e-6,             # ★ 蒸馏默认比 SFT 小
+        learning_rate=lr,               # ★ 默认 1e-6（比 SFT 小），可用 --lr 覆盖
         warmup_steps=3,
         lr_scheduler_type="cosine",
         bf16=has_cuda,

@@ -142,29 +142,41 @@ def stage_distributions(prompt_ids, gen, tok, student, student_name, teacher_nam
     return rows, mean_kl, loss, teacher
 
 
-def probe_kl(tok, student, teacher, eval_rows, gen_tokens: int, temperature: float, k: int = 8):
+def probe_kl(tok, student, teacher, eval_rows, gen_tokens: int, temperature: float,
+             k: int = 8, reuse=None):
     """
     held-out 上量一次「学生离教师有多远」：越大说明还没学会教师。
 
     做法：学生自己生成 → 教师在同一串 token 上给分布 → 算平均前向 KL。
-    蒸馏做对了，这个数应该明显下降。
+
+    `reuse`：传入上一次返回的序列列表，就**不再重新生成**，直接在那些 token 上量。
+    训练前后必须用同一批序列才可比 —— 否则学生输出变了，量的是两条不同的文本。
+    返回 (平均 KL, 样例, 本次用到的序列列表)。
     """
     import torch
 
     dev = student.device
     teacher = teacher.to(dev).eval()
     kl_sum, n_tok, samples = 0.0, 0, []
+    used = [] if reuse is None else reuse
     for idx, r in enumerate(eval_rows[:k]):
         ids = ids_of(tok, r["prompt"], add_generation_prompt=True)
-        t = torch.tensor([ids], device=dev)
-        with torch.no_grad():
-            out = student.generate(
-                t, max_new_tokens=gen_tokens, do_sample=False,
-                pad_token_id=tok.pad_token_id or tok.eos_token_id,
-            )
+        if reuse is not None:
+            if idx >= len(reuse):
+                break
+            gen = reuse[idx]                    # 同一条序列，训练前后都量它
+        else:
+            t = torch.tensor([ids], device=dev)
+            with torch.no_grad():
+                out = student.generate(
+                    t, max_new_tokens=gen_tokens, do_sample=False,
+                    pad_token_id=tok.pad_token_id or tok.eos_token_id,
+                )
             gen = out[0][len(ids):].tolist()
             if not gen:
                 continue
+            used.append(gen)
+        with torch.no_grad():
             full = torch.tensor([ids + gen], device=dev)
             ls = student(full).logits[0]
             lt = teacher(full).logits[0]
@@ -179,4 +191,4 @@ def probe_kl(tok, student, teacher, eval_rows, gen_tokens: int, temperature: flo
             samples.append(
                 {"prompt": r["prompt"][-1]["content"], "out": tok.decode(gen, skip_special_tokens=False)}
             )
-    return (kl_sum / n_tok if n_tok else float("nan")), samples
+    return (kl_sum / n_tok if n_tok else float("nan")), samples, used

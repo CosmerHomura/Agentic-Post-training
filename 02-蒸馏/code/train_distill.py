@@ -1,4 +1,4 @@
-"""
+﻿"""
 第 2 步 · 蒸馏（On-policy GKD）—— 入口
 
 和 SFT 最大的区别：**没有标准答案**。
@@ -63,6 +63,8 @@ def parse_args():
     ap.add_argument("--model", default=STUDENT, help="学生模型")
     ap.add_argument("--teacher", default=TEACHER, help="教师模型")
     ap.add_argument("--epochs", type=float, default=2)
+    ap.add_argument("--lr", type=float, default=1e-6,
+                    help="Learning rate; 1e-6 is the distillation default, 5e-6~2e-5 is faster")
     ap.add_argument("--max-steps", type=int, default=0)
     ap.add_argument("--beta", type=float, default=0.5, help="0=前向KL 1=反向KL 0.5=JSD")
     ap.add_argument("--temperature", type=float, default=1.0)
@@ -107,14 +109,23 @@ def main() -> None:
         prompt_ids, gen, tok, student, args.model, args.teacher, args.beta, args.temperature
     )
 
+    # 训练前先生成一批序列，训练后**在同一批 token 上**再量一次 KL —— 口径才一致
+    state = {"used": None}
+
     def hook(model, teacher):
-        kl, samples = probe_kl(tok, model, teacher, eval_rows, min(args.gen_tokens, 120), args.temperature)
-        return {"kl": kl, "samples": samples}
+        first = state["used"] is None
+        kl, samples, used = probe_kl(
+            tok, model, teacher, eval_rows, min(args.gen_tokens, 120),
+            args.temperature, reuse=state["used"],
+        )
+        state["used"] = used
+        return {"kl": kl, "samples": samples, "n_seqs": len(used),
+                "n_tokens": sum(len(g) for g in used), "fixed": not first}
 
     _trainer, train_rows, pre, post = train(
         rows, args.model, args.teacher, args.epochs, args.max_steps,
         args.beta, args.temperature, args.gen_tokens, args.plot_every,
-        tb=args.tensorboard,
+        tb=args.tensorboard, lr=args.lr,
         before_hook=None if args.no_eval or not eval_rows else hook,
     )
     print()

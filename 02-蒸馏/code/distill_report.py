@@ -49,10 +49,20 @@ def write_report(payload: dict) -> None:
 
     L.append("## 3. held-out 评测（训练前 vs 训练后）\n")
     if payload.get("pre") and payload.get("post"):
+        pre, post = payload["pre"], payload["post"]
         L.append("| | 平均前向 KL（学生 vs 教师，越小越像） |")
         L.append("|---|---|")
-        L.append(f"| 训练前 | **{payload['pre']['kl']:.4f}** |")
-        L.append(f"| 训练后 | **{payload['post']['kl']:.4f}** |")
+        L.append(f"| 训练前 | **{pre['kl']:.4f}** |")
+        L.append(f"| 训练后 | **{post['kl']:.4f}** |")
+        if post.get("fixed"):
+            d = post["kl"] - pre["kl"]
+            L.append("")
+            L.append(f"训练后这一次是在**训练前学生生成的那 {post.get('n_seqs', 0)} 条序列**"
+                     f"（共 {post.get('n_tokens', 0)} 个 token）上量的，前后可比；"
+                     f"变化 {d:+.4f}（{100 * d / pre['kl']:+.1f}%）。")
+            L.append("")
+            L.append("注意：这个数**不是**训练目标本身。训练用的是 β 混合的 JSD，落在学生**采样**出来的序列上；"
+                     "这里量的是贪心序列上的前向 KL，两者数值本来就不一样，只看趋势。")
         for tag in ("pre", "post"):
             for o in payload[tag]["samples"]:
                 L.append(f"\n**{tag}** · prompt：{o['prompt'][:80]}\n\n```\n{o['out']}\n```")
