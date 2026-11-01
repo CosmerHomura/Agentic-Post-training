@@ -24,7 +24,7 @@ def main():
     dataset = load_dataset("trl-lib/DeepMath-103K", split="train")
 
     training_args = AsyncGRPOConfig(
-        output_dir="./ckpt/async-grpo",
+        output_dir="./05-Harness与规模化/ckpt/async-grpo",
 
         # ---- 指向你启动的 vLLM 服务 ----
         vllm_server_url="http://localhost:8000",

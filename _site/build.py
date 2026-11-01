@@ -438,6 +438,15 @@ def strip_nav(lines):
     return keep
 
 
+COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def strip_comments(text):
+    """去掉 md 里的 <!-- 待回填 --> 注释，别让它们露在页面上。"""
+    text = COMMENT_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", text)
+
+
 def build_chapter(cid, folder, title, subtitle, slug_map):
     path = os.path.join(ROOT, folder, "README.md")
     text = io.open(path, encoding="utf-8").read()
@@ -453,7 +462,7 @@ def build_chapter(cid, folder, title, subtitle, slug_map):
         if m2:
             t2 = t2[m2.start():]
         parts.append(t2.rstrip())
-    text = "\n\n".join(parts)
+    text = strip_comments("\n\n".join(parts))
 
     lines = text.split("\n")
 

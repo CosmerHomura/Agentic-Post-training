@@ -83,7 +83,7 @@ JSONL（只有 prompt）
 下面每段都是 `python 02-蒸馏/code/train_distill.py --inspect` / `python 02-蒸馏/code/train_distill.py` 会打印的内容。
 
 > **说明**：带具体数字的段落是**预期的示意值**——脚本打印的字段与结构就是这些，数字随模型、采样和卡而变。
-> 你跑完把 `runs/distill/report.md` 发我，我会把这里全部换成你的实测输出。
+> 你跑完把 `02-蒸馏/runs/distill/report.md` 发我，我会把这里全部换成你的实测输出。
 
 ### 5.1 阶段 1：读 JSONL
 
@@ -362,20 +362,20 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | 文件 | 负责什么 |
 |---|---|
 | `code/train_distill.py` | 入口：解析参数、按顺序调用下面这些 |
-| `code/common.py` | 仓库根路径、`runs/distill`·`ckpt/distill-agent`、学生/教师默认名、设备与 dtype |
+| `code/common.py` | 仓库根路径、`02-蒸馏/runs/distill`·`02-蒸馏/ckpt/distill-agent`、学生/教师默认名、设备与 dtype |
 | `code/distill_data.py` | 阶段 1：读 prompt（本地 jsonl / 官方数据集）、切 held-out |
 | `code/distill_prompt.py` | 阶段 2~3：`add_generation_prompt` 模板、tokenize |
 | `code/distill_probe.py` | 阶段 4~5：学生生成、教师分布对比、held-out KL 探针 |
 | `code/distill_trainer.py` | 阶段 6：DistillationTrainer + 训练前后各测一次 KL |
-| `code/distill_report.py` | ASCII 损失图 + `runs/distill/report.md` |
+| `code/distill_report.py` | `loss.svg` 曲线 + `02-蒸馏/runs/distill/report.md` |
 | `code/distill_loss.py` | 5.6 节那张 KL / JSD 手算表（`--explain-loss`） |
 
 | 产物 | 内容 |
 |---|---|
-| `runs/distill/report.md` | **把这份发我**：分布表、held-out KL 前/后、loss 表、损失图 |
-| `runs/distill/tokens.txt` | 全量 token 表 |
-| `runs/distill/loss.csv` | 每步 loss |
-| `ckpt/distill-agent/` | 蒸馏后的学生 |
+| `02-蒸馏/runs/distill/report.md` | **把这份发我**：分布表、held-out KL 前/后、loss 曲线、loss 表 |
+| `02-蒸馏/runs/distill/tokens.txt` | 全量 token 表 |
+| `02-蒸馏/runs/distill/loss.csv` | 每步 loss |
+| `02-蒸馏/ckpt/distill-agent/` | 蒸馏后的学生 |
 
 ### 6.3 训练时终端长这样
 
@@ -395,16 +395,8 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ### 6.4 损失图
 
-```
-  loss 走势 (min 0.351 / max 0.421)
-   0.421 |●
-   0.404 | ●
-   0.386 |  ●
-   0.369 |   ●●
-   0.351 |     ●●●
-         +--------------------------------------
-          step 1 → 6
-```
+训练中每 20 步重画 `02-蒸馏/runs/distill/loss.svg`，`report.md` 里直接 `![loss 曲线](loss.svg)` 引用它（**没跑过训练时这张图不存在，属正常**）；
+终端里同步显示一行实时进度（含 EMA 与最近 28 步的方块走势）。
 
 <!-- 待回填：真实损失图 -->
 
@@ -481,8 +473,8 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ### 8.3 产物
 
-- `ckpt/distill-agent/`：可以做 RL的起点（通常比 SFT 版更"会写"）
-- `runs/distill/report.md`：这次蒸馏的证据
+- `02-蒸馏/ckpt/distill-agent/`：可以做 RL的起点（通常比 SFT 版更"会写"）
+- `02-蒸馏/runs/distill/report.md`：这次蒸馏的证据
 
 ---
 

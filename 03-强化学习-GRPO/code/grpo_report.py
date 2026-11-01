@@ -1,5 +1,5 @@
 """
-报告：奖励/损失曲线 + runs/grpo/report.md。
+报告：loss.svg 曲线（loss + reward）+ runs/grpo/report.md。
 
 跑完把 report.md 发回来，教程里的「示意值」就能换成你的真实数字。
 """
@@ -9,21 +9,6 @@ from __future__ import annotations
 import json
 
 from common import RUN_DIR
-
-
-def chart(rows, key: str = "reward", width: int = 40) -> str:
-    if not rows:
-        return "  （没有记录）"
-    vals = [r[key] for r in rows]
-    lo, hi = min(vals), max(vals)
-    span = (hi - lo) or 1.0
-    out = [f"  {key} 走势 (min {lo:.3f} / max {hi:.3f})"]
-    for v in vals[:width]:
-        bar = int(round((v - lo) / span * 30))
-        out.append(f"  {v:6.3f} |" + " " * bar + "●")
-    out.append("         +" + "-" * 34)
-    out.append(f"          step 1 → {len(vals)}")
-    return "\n".join(out)
 
 
 def write_report(p: dict) -> None:
@@ -51,7 +36,8 @@ def write_report(p: dict) -> None:
         L.append(
             f"| {r['step']} | {r['loss']} | {r['reward']} | {r['reward_std']} | {r['kl']} | {r['len']} | {r['clip']} |"
         )
-    L.append("\n```\n" + chart(p["train_rows"], "reward") + "\n```\n")
+    L.append("\n![loss / reward 曲线](loss.svg)\n")
+    L.append("（每 20 步刷新一次；完整数据见 `loss.csv`）\n")
 
     L.append("## 3. held-out 评测（训练前 vs 训练后）\n")
     if p.get("pre") and p.get("post"):

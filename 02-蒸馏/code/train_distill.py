@@ -32,7 +32,7 @@
     distill_loss.py     手算 KL/JSD（--explain-loss）
     train_distill.py    入口：解析参数、按顺序调用
 
-产物（仓库根目录下）
+产物（都在本章目录 02-蒸馏/ 下）
 --------------------
     runs/distill/report.md     ← 跑完发我，我回填教程里的示例输出
     runs/distill/report.json
@@ -49,7 +49,7 @@ from distill_data import load_prompts, stage_read
 from distill_loss import explain_loss
 from distill_probe import probe_kl, stage_distributions, stage_generate
 from distill_prompt import stage_template, stage_tokens
-from distill_report import chart, write_report
+from distill_report import write_report
 from distill_trainer import train
 
 
@@ -67,6 +67,9 @@ def parse_args():
     ap.add_argument("--beta", type=float, default=0.5, help="0=前向KL 1=反向KL 0.5=JSD")
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--gen-tokens", type=int, default=160, help="学生生成 / 教师对比的长度上限")
+    ap.add_argument("--tensorboard", action="store_true",
+                    help="把日志写进 <章节>/runs/<x>/tb，供 TensorBoard / AutoPanel 查看")
+    ap.add_argument("--plot-every", type=int, default=20, help="每多少步重画一次 runs/distill/loss.svg（0=不画）")
     ap.add_argument("--data", default=str(LOCAL_JSONL))
     ap.add_argument("--dataset", default=None, help="HF 数据集名，如 trl-lib/ultrafeedback-prompt")
     ap.add_argument("--split", default="train")
@@ -110,11 +113,12 @@ def main() -> None:
 
     _trainer, train_rows, pre, post = train(
         rows, args.model, args.teacher, args.epochs, args.max_steps,
-        args.beta, args.temperature, args.gen_tokens,
+        args.beta, args.temperature, args.gen_tokens, args.plot_every,
+        tb=args.tensorboard,
         before_hook=None if args.no_eval or not eval_rows else hook,
     )
     print()
-    print(chart(train_rows))
+    print(f"  曲线图：{RUN_DIR / 'loss.svg'}")
 
     payload = {
         "student": args.model,

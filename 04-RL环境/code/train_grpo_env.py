@@ -46,7 +46,7 @@ dataset = Dataset.from_list(rows)
 
 # ---------------------------------------------------------------- 2. 配置
 training_args = GRPOConfig(
-    output_dir="./ckpt/grpo-coding-env",
+    output_dir="./04-RL环境/ckpt/grpo-coding-env",
 
     # ★ 核心：环境取代奖励函数
     environment_factory=CodingEnv,   # 每次 rollout 新建一个实例

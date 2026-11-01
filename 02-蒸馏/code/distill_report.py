@@ -1,5 +1,5 @@
 """
-报告：损失图 + runs/distill/report.md。
+报告：loss.svg 曲线 + runs/distill/report.md。
 
 报告里三块：训练前的分布差（逐 token 表）、训练 loss、held-out 前后对比。
 跑完把这个文件发回来，教程里的「示意值」就能换成你的真实数字。
@@ -10,24 +10,6 @@ from __future__ import annotations
 import json
 
 from common import RUN_DIR
-
-
-def chart(rows, width: int = 46) -> str:
-    if not rows:
-        return "  （没有 loss 记录）"
-    losses = [r["loss"] for r in rows]
-    lo, hi = min(losses), max(losses)
-    span = (hi - lo) or 1.0
-    lines = [f"  loss 走势 (min {lo:.3f} / max {hi:.3f})"]
-    n = max(1, min(width, len(losses)))
-    step = max(1, len(losses) // n)
-    sample = losses[::step][:n]
-    for v in sample:
-        bar = int(round((v - lo) / span * 34))
-        lines.append(f"  {v:6.3f} |" + " " * bar + "●")
-    lines.append("         +" + "-" * 38)
-    lines.append(f"          step 1 → {len(losses)}")
-    return "\n".join(lines)
 
 
 def write_report(payload: dict) -> None:
@@ -62,7 +44,8 @@ def write_report(payload: dict) -> None:
             f"| {r['step']} | {r['loss']} | {r['lr']:.2e} | {r['grad_norm']} "
             f"| {r['entropy']} | {r['mean_len']} | {r['clip_ratio']} |"
         )
-    L.append("\n```\n" + chart(payload["train_rows"]) + "\n```\n")
+    L.append("\n![loss 曲线](loss.svg)\n")
+    L.append("（每 20 步刷新一次；完整数据见 `loss.csv`）\n")
 
     L.append("## 3. held-out 评测（训练前 vs 训练后）\n")
     if payload.get("pre") and payload.get("post"):

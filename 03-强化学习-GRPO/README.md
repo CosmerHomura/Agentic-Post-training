@@ -105,7 +105,7 @@ def accuracy_reward(completions, ground_truth=None, **kwargs):
 ## 6. 全链路实拍
 
 > 下面第 1～4 步是**结构示意**（真实跑一份，数字随采样变化）；
-> 跑过 `python 03-强化学习-GRPO/code/train_grpo.py` 后把 `runs/grpo/report.md` 发我，我回填成实测值。
+> 跑过 `python 03-强化学习-GRPO/code/train_grpo.py` 后把 `03-强化学习-GRPO/runs/grpo/report.md` 发我，我回填成实测值。
 
 ### 6.1 第 1 步：读数据（没有答案）
 
@@ -390,12 +390,12 @@ python 03-强化学习-GRPO/code/train_grpo.py --dataset trl-lib/DeepMath-103K -
 | 文件 | 负责什么 |
 |---|---|
 | `code/train_grpo.py` | 入口：解析参数、按顺序调用下面这些 |
-| `code/common.py` | 仓库根路径、`runs/grpo`·`ckpt/grpo-agent`、打印、tokenizer 小工具 |
+| `code/common.py` | 仓库根路径、`03-强化学习-GRPO/runs/grpo`·`03-强化学习-GRPO/ckpt/grpo-agent`、打印、tokenizer 小工具 |
 | `code/grpo_data.py` | 阶段 1：读题目、解析标准答案、答案归一化、两个格式正则 |
 | `code/grpo_rewards.py` | 奖励函数（格式分、正确性分）+ 组内优势 `score_group()` |
 | `code/grpo_rollout.py` | 阶段 2~3：模板、采 G 条并打分、held-out `pass@1` |
 | `code/grpo_trainer.py` | 阶段 5：GRPOTrainer + 训练前后各测一次 |
-| `code/grpo_report.py` | ASCII 曲线 + `runs/grpo/report.md` |
+| `code/grpo_report.py` | `loss.svg` 双曲线（loss + reward）+ `03-强化学习-GRPO/runs/grpo/report.md` |
 | `code/grpo_loss.py` | 第 7 节那套手算（`--explain-loss`） |
 
 你以后要换奖励函数，只需要动 `grpo_rewards.py` 一个文件。
@@ -418,7 +418,7 @@ python 03-强化学习-GRPO/code/train_grpo.py --dataset trl-lib/DeepMath-103K -
 
 ## 10. 产物与验收
 
-跑完看 `runs/grpo/report.md`：
+跑完看 `03-强化学习-GRPO/runs/grpo/report.md`：
 
 | 该看到的 | 正常的样子 | 不正常 |
 |---|---|---|

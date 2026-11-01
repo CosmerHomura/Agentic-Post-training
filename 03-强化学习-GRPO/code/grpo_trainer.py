@@ -9,12 +9,16 @@
 
 from __future__ import annotations
 
-from common import CKPT_DIR, hr
+import sys
+import time
+
+from common import CKPT_DIR, RUN_DIR, fmt_eta, hr, plot_svg, spark
 from grpo_rewards import accuracy_reward, format_reward
 
 
 def train(rows, model_name: str, epochs: float, max_steps: int, num_gen: int,
-          temperature: float, max_new: int, before_hook=None):
+          temperature: float, max_new: int, plot_every: int = 20,
+          before_hook=None, tb: bool = False):
     hr("阶段 5 / 5   训练（每个 logging 步打印 loss / reward / 截断率）")
     import torch
     from datasets import Dataset
@@ -24,8 +28,13 @@ def train(rows, model_name: str, epochs: float, max_steps: int, num_gen: int,
     ds = Dataset.from_list([{"prompt": r["prompt"], "ground_truth": r["ground_truth"]} for r in rows])
 
     class LossPrinter(TrainerCallback):
+        """每步一行实时进度；每 plot_every 步把两条曲线重写成 runs/grpo/loss.svg。"""
+
         def __init__(self):
             self.rows = []
+            self.ema = None
+            self.t0 = time.time()
+            self.tty = sys.stdout.isatty()
 
         def on_log(self, args, state, control, logs=None, **kwargs):
             if not logs or "loss" not in logs:
@@ -40,10 +49,44 @@ def train(rows, model_name: str, epochs: float, max_steps: int, num_gen: int,
                 "clip": round(float(logs.get("completions/clipped_ratio", 0) or 0), 3),
             }
             self.rows.append(r)
-            print(
-                f"  step {r['step']:>3}  loss {r['loss']:.4f}  reward {r['reward']:.3f} "
-                f"(std {r['reward_std']:.3f})  kl {r['kl']:.4f}  len {r['len']:.0f}  clip {r['clip']:.2f}"
+            self.ema = r["loss"] if self.ema is None else 0.9 * self.ema + 0.1 * r["loss"]
+            total = state.max_steps or 0
+            pct = 100.0 * r["step"] / total if total else 0.0
+            eta = ""
+            if total and r["step"]:
+                eta = "  eta " + fmt_eta((time.time() - self.t0) / r["step"] * (total - r["step"]))
+            line = (f"step {r['step']:>4}/{total:<4} {pct:5.1f}%  loss {r['loss']:.4f}  "
+                    f"reward {r['reward']:.3f}±{r['reward_std']:.3f}  len {r['len']:.0f}{eta}  "
+                    f"{spark([x['reward'] for x in self.rows])}")
+            if self.tty:
+                print("\r\033[K" + line[:160], end="", flush=True)
+            else:
+                print("  " + line, flush=True)
+            if plot_every and r["step"] % plot_every == 0:
+                self._plot(total)
+
+        def _plot(self, total):
+            steps = [x["step"] for x in self.rows]
+            losses = [x["loss"] for x in self.rows]
+            rewards = [x["reward"] for x in self.rows]
+            ema, e = [], None
+            for v in losses:
+                e = v if e is None else 0.9 * e + 0.1 * v
+                ema.append(e)
+            plot_svg(
+                RUN_DIR / "loss.svg",
+                [
+                    {"name": "loss（EMA 0.9）", "pts": list(zip(steps, ema)), "color": "#2563eb", "width": 2.0},
+                    {"name": "平均 reward", "pts": list(zip(steps, rewards)), "color": "#16a34a", "width": 1.8},
+                ],
+                title=f"GRPO 曲线（{steps[-1]}/{total or steps[-1]} 步）", ylabel="loss / reward",
             )
+
+        def on_train_end(self, args, state, control, **kwargs):
+            if self.tty:
+                print()
+            if self.rows:
+                self._plot(state.max_steps or self.rows[-1]["step"])
 
     printer = LossPrinter()
     has_cuda = torch.cuda.is_available()
@@ -70,7 +113,9 @@ def train(rows, model_name: str, epochs: float, max_steps: int, num_gen: int,
         logging_steps=1,
         save_strategy="no",
         remove_unused_columns=False,      # reward 要用数据集里的 ground_truth 列
-        report_to=[],
+        report_to=["tensorboard"] if tb else [],
+        logging_dir=str(RUN_DIR / "tb"),
+        run_name=RUN_DIR.name,
     )
     trainer = GRPOTrainer(
         model=model_name,

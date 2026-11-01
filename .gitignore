@@ -6,7 +6,7 @@ __pycache__/
 venv/
 env/
 
-# 训练产物与缓存
+# 训练产物与缓存（产物跟着章节走：01-监督微调-SFT/runs/、01-监督微调-SFT/ckpt/ …）
 ckpt/
 checkpoints/
 runs/
@@ -34,3 +34,4 @@ _site/_p_*.html
 .DS_Store
 Thumbs.db
 desktop.ini
+_site/_validate.py

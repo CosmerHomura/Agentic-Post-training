@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import re
+import sys
+import time
 
-from common import CKPT_DIR, hr
+from common import CKPT_DIR, RUN_DIR, fmt_eta, hr, plot_svg, spark
 
 
 def eval_sets(eval_records, k=2):
@@ -82,7 +84,8 @@ def stage_before_after(tok, model, eval_records, tag, max_new_tokens=220):
     return outs
 
 
-def train(model_name, records, eval_records, epochs, max_steps, bf16, before_hook=None):
+def train(model_name, records, eval_records, epochs, max_steps, bf16, plot_every=20,
+          before_hook=None, tb=False):
     hr("阶段 5   训练（每个 logging 步打印 loss）")
     import torch
     from datasets import Dataset
@@ -103,24 +106,62 @@ def train(model_name, records, eval_records, epochs, max_steps, bf16, before_hoo
     print(f"  设备：{'GPU' if has_cuda else 'CPU（小样本冒烟用，会很慢）'}   bf16：{bf16}")
 
     class LossPrinter(TrainerCallback):
+        """每步一行实时进度；每 plot_every 步把曲线重写成 runs/sft/loss.svg。"""
+
         def __init__(self):
             self.rows = []
+            self.ema = None
+            self.t0 = time.time()
+            self.tty = sys.stdout.isatty()
 
         def on_log(self, args, state, control, logs=None, **kwargs):
             if not logs or "loss" not in logs:
                 return
-            self.rows.append(
-                {
-                    "step": state.global_step,
-                    "loss": round(logs["loss"], 4),
-                    "lr": float(logs.get("learning_rate", 0.0)),
-                    "grad_norm": round(float(logs.get("grad_norm", 0.0) or 0.0), 4),
-                    "tok_acc": round(float(logs.get("mean_token_accuracy", 0.0) or 0.0), 4),
-                }
+            r = {
+                "step": state.global_step,
+                "loss": round(float(logs["loss"]), 4),
+                "lr": float(logs.get("learning_rate", 0.0)),
+                "grad_norm": round(float(logs.get("grad_norm", 0) or 0), 4),
+                "tok_acc": round(float(logs.get("mean_token_accuracy", 0) or 0), 4),
+            }
+            self.rows.append(r)
+            self.ema = r["loss"] if self.ema is None else 0.9 * self.ema + 0.1 * r["loss"]
+            total = state.max_steps or 0
+            pct = 100.0 * r["step"] / total if total else 0.0
+            eta = ""
+            if total and r["step"]:
+                eta = "  eta " + fmt_eta((time.time() - self.t0) / r["step"] * (total - r["step"]))
+            line = (f"step {r['step']:>4}/{total:<4} {pct:5.1f}%  loss {r['loss']:.4f}  "
+                    f"ema {self.ema:.4f}  acc {r['tok_acc']:.3f}  lr {r['lr']:.2e}{eta}  "
+                    f"{spark([x['loss'] for x in self.rows])}")
+            if self.tty:
+                print("\r\033[K" + line[:160], end="", flush=True)
+            else:
+                print("  " + line, flush=True)
+            if plot_every and r["step"] % plot_every == 0:
+                self._plot(total)
+
+        def _plot(self, total):
+            steps = [x["step"] for x in self.rows]
+            losses = [x["loss"] for x in self.rows]
+            ema, e = [], None
+            for v in losses:
+                e = v if e is None else 0.9 * e + 0.1 * v
+                ema.append(e)
+            plot_svg(
+                RUN_DIR / "loss.svg",
+                [
+                    {"name": "每步 loss", "pts": list(zip(steps, losses)), "color": "#93c5fd", "width": 1.2},
+                    {"name": "EMA(0.9)", "pts": list(zip(steps, ema)), "color": "#2563eb", "width": 2.0},
+                ],
+                title=f"loss 曲线（{steps[-1]}/{total or steps[-1]} 步）", ylabel="loss",
             )
-            r = self.rows[-1]
-            print(f"  step {r['step']:>3}  loss {r['loss']:.4f}  lr {r['lr']:.2e}  "
-                  f"grad {r['grad_norm']:.3f}  token_acc {r['tok_acc']:.3f}")
+
+        def on_train_end(self, args, state, control, **kwargs):
+            if self.tty:
+                print()
+            if self.rows:
+                self._plot(state.max_steps or self.rows[-1]["step"])
 
     printer = LossPrinter()
     args = SFTConfig(
@@ -142,7 +183,9 @@ def train(model_name, records, eval_records, epochs, max_steps, bf16, before_hoo
         gradient_checkpointing=True,
         logging_steps=1,
         save_strategy="no",
-        report_to=[],
+        report_to=["tensorboard"] if tb else [],
+        logging_dir=str(RUN_DIR / "tb"),
+        run_name=RUN_DIR.name,
     )
     trainer = SFTTrainer(
         model=model_name,

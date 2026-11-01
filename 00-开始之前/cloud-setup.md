@@ -66,7 +66,7 @@ AutoDL / 阿里云 PAI / 恒源云的控制台都有 JupyterLab，直接把整�
 
 ### 10.4 仓库里别提交什么
 
-`ckpt/`（几百 MB 到几十 GB）、`.venv/`、`__pycache__/`、模型缓存、`_site/_preview.html` 这类临时件。工作区根目录已经放了 `.gitignore`，覆盖这些。
+各章目录下的 `ckpt/`（几百 MB 到几十 GB）、`.venv/`、`__pycache__/`、模型缓存、`_site/_preview.html` 这类临时件。工作区根目录已经放了 `.gitignore`，覆盖这些。
 
 > 仓库真正的体积只有约 400KB —— 8 个 README + 16 个示例文件 + 一个 148KB 的单文件网页。`index.html` 一起提交，但不依赖任何托管服务：想要网页版的人自己下载 `index.html`，双击就能看，不需要服务器、不需要联网。
 >
@@ -317,7 +317,7 @@ python 03-强化学习-GRPO/code/train_grpo.py --dataset trl-lib/DeepMath-103K -
 python 04-RL环境/code/train_grpo_env.py
 ```
 
-脚本用 `Path(__file__).resolve().parents[2]` 定位仓库根，所以**从哪个目录启动都能找到 `runs/`、`ckpt/` 和 `data/`**。
+脚本按自己的位置算出所在章节，所以**从哪个目录启动都能找到 `data/`**，产物也只会落在本章的 `runs/` 与 `ckpt/`（例如 `01-监督微调-SFT/runs/sft/`），不会往仓库根堆。
 加 `--dataset` 后数据从 Hugging Face 下载，记得 `export HF_ENDPOINT=https://hf-mirror.com`。
 
 每章「怎么判断真的学会了」看哪个指标，README 里都有一张表（SFT 看 held-out -ln p、蒸馏看 KL、GRPO看 pass@1）。
@@ -353,6 +353,49 @@ CUDA_VISIBLE_DEVICES=1 accelerate launch 05-Harness与规模化/code/train_async
 ```
 
 脚本里的 `vllm_server_url` 默认就是 `http://localhost:8000`（见 `train_async_grpo.py` 顶部注释），换成别的端口要同步改。
+
+### 12.4 训练时看 TensorBoard（AutoDL 的 AutoPanel）
+
+AutoDL 实例详情页右侧有个 **AutoPanel**，里面的 TensorBoard 只读一个固定目录：`/root/tf-logs`。
+我们的脚本默认不写 TensorBoard（`report_to=[]`），要看就加 `--tensorboard`：
+
+```bash
+# 1）确认有 tensorboard（镜像一般自带；没有就装，几 MB）
+python -c "import tensorboard, sys; print('ok', tensorboard.__version__)"
+
+# 2）开训时加 --tensorboard，日志落在 <章节>/runs/<x>/tb/
+python 01-监督微调-SFT/code/train_sft.py \
+  --dataset trl-lib/Capybara --limit 2000 --eval-size 100 --tensorboard
+
+# 3）把它挂到 AutoPanel 认的目录（软链接，不占空间、不动代码）
+mkdir -p /root/tf-logs
+ln -sfn /root/Agentic-Post-training/01-监督微调-SFT/runs/sft/tb /root/tf-logs/sft
+```
+
+然后：**AutoDL 控制台 → 实例 → AutoPanel → TensorBoard → 打开**。它会自动拉起一个 TensorBoard
+进程（默认 6006 端口），页面里就能看到 `loss`、`learning_rate`、`grad_norm`、`eval/loss` 等曲线，
+横轴是 step，可以缩放、可以对比多次运行。
+
+跑第 2、3 章时各挂一个子目录，TensorBoard 会当成不同的 run 并排比较：
+
+```bash
+ln -sfn /root/Agentic-Post-training/02-蒸馏/runs/distill/tb /root/tf-logs/distill
+ln -sfn /root/Agentic-Post-training/03-强化学习-GRPO/runs/grpo/tb   /root/tf-logs/grpo
+```
+
+看不到东西时按顺序查：
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 面板一直「等待日志」 | 目录挂错了 | `ls -l /root/tf-logs/`，应能看到 `sft -> .../runs/sft/tb` |
+| 目录空的 | 没加 `--tensorboard`，或还没跑满 1 步 | 加了重跑；`logging_steps=1`，第 1 步就有数据 |
+| 页面能开但没曲线 | AutoPanel 缓存了旧的空目录 | 面板里点重启 TensorBoard，或换个子目录名 |
+
+两种看法不冲突：`--tensorboard` 给浏览器看交互曲线，`--plot-every 20` 顺手写一张 `loss.svg` 快照
+（断线、离线、发群里都方便）。只想留一个就 `--plot-every 0` 或去掉 `--tensorboard`。
+
+想在本地看（不经过 AutoPanel）：先 `ssh -L 6006:localhost:6006 root@<ip>`，然后在云端跑
+`tensorboard --logdir 01-监督微调-SFT/runs/sft/tb --port 6006`，浏览器开 `http://localhost:6006`。
 
 ---
 

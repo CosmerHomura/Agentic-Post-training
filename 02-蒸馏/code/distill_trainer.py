@@ -9,11 +9,15 @@
 
 from __future__ import annotations
 
-from common import CKPT_DIR, hr
+import sys
+import time
+
+from common import CKPT_DIR, RUN_DIR, fmt_eta, hr, plot_svg, spark
 
 
 def train(rows, student_name, teacher_name, epochs: float, max_steps: int | None,
-          beta: float, temperature: float, gen_tokens: int, before_hook=None):
+          beta: float, temperature: float, gen_tokens: int, plot_every: int = 20,
+          before_hook=None, tb: bool = False):
     hr("阶段 6   训练（学生每个 logging 步打印一次 loss）")
     import torch
     from datasets import Dataset
@@ -23,29 +27,64 @@ def train(rows, student_name, teacher_name, epochs: float, max_steps: int | None
     ds = Dataset.from_list([{"prompt": r["prompt"]} for r in rows])
 
     class LossPrinter(TrainerCallback):
+        """每步一行实时进度；每 plot_every 步把曲线重写成 runs/distill/loss.svg。"""
+
         def __init__(self):
             self.rows = []
+            self.ema = None
+            self.t0 = time.time()
+            self.tty = sys.stdout.isatty()
 
         def on_log(self, args, state, control, logs=None, **kwargs):
             if not logs or "loss" not in logs:
                 return
-            self.rows.append(
-                {
-                    "step": state.global_step,
-                    "loss": round(float(logs["loss"]), 4),
-                    "lr": float(logs.get("learning_rate", 0.0)),
-                    "grad_norm": round(float(logs.get("grad_norm", 0) or 0), 4),
-                    "entropy": round(float(logs.get("entropy", 0) or 0), 4),
-                    "mean_len": round(float(logs.get("completions/mean_length", 0) or 0), 1),
-                    "clip_ratio": round(float(logs.get("completions/clipped_ratio", 0) or 0), 3),
-                }
+            r = {
+                "step": state.global_step,
+                "loss": round(float(logs["loss"]), 4),
+                "lr": float(logs.get("learning_rate", 0.0)),
+                "grad_norm": round(float(logs.get("grad_norm", 0) or 0), 4),
+                "entropy": round(float(logs.get("entropy", 0) or 0), 4),
+                "mean_len": round(float(logs.get("completions/mean_length", 0) or 0), 1),
+                "clip_ratio": round(float(logs.get("completions/clipped_ratio", 0) or 0), 3),
+            }
+            self.rows.append(r)
+            self.ema = r["loss"] if self.ema is None else 0.9 * self.ema + 0.1 * r["loss"]
+            total = state.max_steps or 0
+            pct = 100.0 * r["step"] / total if total else 0.0
+            eta = ""
+            if total and r["step"]:
+                eta = "  eta " + fmt_eta((time.time() - self.t0) / r["step"] * (total - r["step"]))
+            line = (f"step {r['step']:>4}/{total:<4} {pct:5.1f}%  loss {r['loss']:.4f}  ema {self.ema:.4f}  "
+                    f"ent {r['entropy']:.2f}  len {r['mean_len']:.0f}  clip {r['clip_ratio']:.2f}{eta}  "
+                    f"{spark([x['loss'] for x in self.rows])}")
+            if self.tty:
+                print("\r\033[K" + line[:160], end="", flush=True)
+            else:
+                print("  " + line, flush=True)
+            if plot_every and r["step"] % plot_every == 0:
+                self._plot(total)
+
+        def _plot(self, total):
+            steps = [x["step"] for x in self.rows]
+            losses = [x["loss"] for x in self.rows]
+            ema, e = [], None
+            for v in losses:
+                e = v if e is None else 0.9 * e + 0.1 * v
+                ema.append(e)
+            plot_svg(
+                RUN_DIR / "loss.svg",
+                [
+                    {"name": "每步 loss", "pts": list(zip(steps, losses)), "color": "#93c5fd", "width": 1.2},
+                    {"name": "EMA(0.9)", "pts": list(zip(steps, ema)), "color": "#2563eb", "width": 2.0},
+                ],
+                title=f"蒸馏 loss（{steps[-1]}/{total or steps[-1]} 步）", ylabel="KL / JSD",
             )
-            r = self.rows[-1]
-            print(
-                f"  step {r['step']:>3}  loss {r['loss']:.4f}  lr {r['lr']:.2e}  "
-                f"grad {r['grad_norm']:.3f}  ent {r['entropy']:.2f}  "
-                f"len {r['mean_len']:.0f}  clip {r['clip_ratio']:.2f}"
-            )
+
+        def on_train_end(self, args, state, control, **kwargs):
+            if self.tty:
+                print()
+            if self.rows:
+                self._plot(state.max_steps or self.rows[-1]["step"])
 
     printer = LossPrinter()
     has_cuda = torch.cuda.is_available()
@@ -68,7 +107,9 @@ def train(rows, student_name, teacher_name, epochs: float, max_steps: int | None
         gradient_checkpointing=True,
         logging_steps=1,
         save_strategy="no",
-        report_to=[],
+        report_to=["tensorboard"] if tb else [],
+        logging_dir=str(RUN_DIR / "tb"),
+        run_name=RUN_DIR.name,
     )
     trainer = DistillationTrainer(
         model=student_name,

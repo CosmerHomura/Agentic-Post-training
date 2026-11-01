@@ -32,7 +32,7 @@
     grpo_loss.py       手算 GRPO 损失（--explain-loss）
     train_grpo.py      入口：解析参数、按顺序调用
 
-产物（仓库根目录下）
+产物（都在本章目录 03-强化学习-GRPO/ 下）
 --------------------
     runs/grpo/report.md       ← 跑完发我，我回填教程里的示例输出
     runs/grpo/report.json
@@ -46,7 +46,7 @@ import argparse
 from common import LOCAL_JSONL, MODEL_DEFAULT, print_env
 from grpo_data import load_rows, stage_read
 from grpo_loss import explain_loss
-from grpo_report import chart, write_report
+from grpo_report import write_report
 from grpo_rollout import pass_at_1, stage_sample_and_score, stage_template
 from grpo_trainer import train
 
@@ -69,6 +69,9 @@ def parse_args():
     ap.add_argument("--split", default="train")
     ap.add_argument("--limit", type=int, default=2000)
     ap.add_argument("--eval-size", type=int, default=100, help="留出多少条做 held-out")
+    ap.add_argument("--tensorboard", action="store_true",
+                    help="把日志写进 <章节>/runs/<x>/tb，供 TensorBoard / AutoPanel 查看")
+    ap.add_argument("--plot-every", type=int, default=20, help="每多少步重画一次 runs/grpo/loss.svg（0=不画）")
     return ap.parse_args()
 
 
@@ -103,14 +106,13 @@ def main() -> None:
 
     _trainer, train_rows, pre, post = train(
         rows, args.model, args.epochs, args.max_steps,
-        args.num_generations, args.temperature, args.max_new,
+        args.num_generations, args.temperature, args.max_new, args.plot_every,
+        tb=args.tensorboard,
         before_hook=hook if eval_rows else None,
     )
 
     print()
-    print(chart(train_rows, "reward"))
-    print()
-    print(chart(train_rows, "loss"))
+    print(f"  曲线图：{RUN_DIR / 'loss.svg'}")
 
     write_report(
         {

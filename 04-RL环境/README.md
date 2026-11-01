@@ -239,7 +239,7 @@ trainer = GRPOTrainer(
 
 ```python
 args = GRPOConfig(
-    output_dir="./ckpt/grpo-coding-env",
+    output_dir="./04-RL环境/ckpt/grpo-coding-env",
     environment_factory=CodingEnv,   # ★ 唯一的关键改动
     num_generations=8,
     max_completion_length=4096,      # ★ 整个 episode 的 token 预算
@@ -309,7 +309,7 @@ MAX_CONCURRENT_ENVS=9 openenv serve --port 8000
 
 ### 10.3 产物
 
-- `./ckpt/grpo-coding-env/`：会使用工具、会读报错的模型
+- `./04-RL环境/ckpt/grpo-coding-env/`：会使用工具、会读报错的模型
 - 一个可复用的环境（下一步 Harness 会把它包进真实 agent）
 
 ---

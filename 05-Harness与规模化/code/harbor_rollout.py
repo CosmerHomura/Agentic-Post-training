@@ -53,7 +53,7 @@ def main():
     dataset = load_dataset("trl-lib/DeepMath-103K", split="train")
 
     config = AsyncGRPOConfig(
-        output_dir="./ckpt/harness-rl",
+        output_dir="./05-Harness与规模化/ckpt/harness-rl",
         vllm_server_url="http://localhost:8000",
         num_generations=8,
         max_inflight_tasks=8,        # 同时在跑的 agent 数（受 Harbor 并发上限约束）

@@ -265,7 +265,7 @@ worker = HarnessRolloutWorker(
 
 ### 9.3 产物
 
-- `./ckpt/harness-rl/`：在真实 agent 壳里训练过的模型
+- `./05-Harness与规模化/ckpt/harness-rl/`：在真实 agent 壳里训练过的模型
 - `rollout_state.json`：断点续训用的状态（首个未训练 prompt 的位置）
 - 一套可复现的服务编排（Harbor + vLLM + 沙箱）
 

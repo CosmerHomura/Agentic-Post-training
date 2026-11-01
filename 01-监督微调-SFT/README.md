@@ -475,7 +475,7 @@ python 01-监督微调-SFT/code/train_sft.py --dataset trl-lib/Capybara --limit 
     --eval-size 100 --model Qwen/Qwen3-0.6B --epochs 1 --gen-tokens 160
 ```
 
-路径不受影响：脚本自己用 `Path(__file__).resolve().parents[2]` 找到仓库根，产物照样落在 `runs/sft/` 和 `ckpt/sft-agent/`。
+路径不受影响：脚本自己按文件位置算出章节目录，产物照样落在 `01-监督微调-SFT/runs/sft/` 和 `01-监督微调-SFT/ckpt/sft-agent/`。
 
 `--limit` 取多少？先 2000 条跑通（约 20–40 分钟），确认 -ln p 在降，再加到 5000–20000。
 
@@ -495,17 +495,18 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | `code/sft_data.py` | 阶段 1：读 JSONL / 官方数据集、切 held-out |
 | `code/sft_template.py` | 阶段 2~4：套模板、打 generation 补丁、算掩码、看 batch |
 | `code/sft_trainer.py` | 阶段 5：SFTTrainer + 训练前后各测一次 |
-| `code/sft_report.py` | ASCII 损失图 + `runs/sft/report.md` |
+| `code/sft_report.py` | `loss.svg` 曲线 + `01-监督微调-SFT/runs/sft/report.md` |
 | `code/sft_loss.py` | 第 6 节那张交叉熵表（`--explain-loss`） |
 
 想改哪一段就只改那一个文件，入口文件基本不用动。
 
 | 产物 | 内容 |
 |---|---|
-| `runs/sft/report.md` | 总报告：环境、held-out 前/后 -ln p、loss 表、ASCII 损失图、生成对比 |
-| `runs/sft/tokens.txt` | 全量 token / label / mask 表（解剖样本，650 行） |
-| `runs/sft/loss.csv` | 每步 loss，可拿去画图 |
-| `ckpt/sft-agent/` | 训练好的权重，后面几步的起点 |
+| `01-监督微调-SFT/runs/sft/report.md` | 总报告：环境、held-out 前/后 -ln p、loss 曲线、loss 表、生成对比 |
+| `01-监督微调-SFT/runs/sft/loss.svg` | 折线图（原始 loss + EMA），训练中每 20 步重画一次 |
+| `01-监督微调-SFT/runs/sft/tokens.txt` | 全量 token / label / mask 表（解剖样本，650 行） |
+| `01-监督微调-SFT/runs/sft/loss.csv` | 每步 loss，可拿去画图 |
+| `01-监督微调-SFT/ckpt/sft-agent/` | 训练好的权重，后面几步的起点 |
 
 ### 7.3 怎么判断「真的有效果」
 
@@ -521,17 +522,17 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ### 7.4 训练时终端长这样
 
-`--inspect` 之后进入训练，每个 logging 步打印一行（`logging_steps=1`）：
+`--inspect` 之后进入训练，终端里是**一行不断刷新的实时进度**（`\r` 原地覆盖，不会刷屏）：
 
 ```
-  模型：Qwen/Qwen3-0.6B   参数量：596M
-  device：cuda:0   bf16：True
-
-  step   1  loss 2.1743  lr 3.3e-07  grad 4.512  token_acc 0.412
-  step   2  loss 1.9806  lr 6.7e-07  grad 3.221  token_acc 0.488
-  step   3  loss 1.8122  lr 1.0e-06  grad 2.884  token_acc 0.531
-  ...
+step  273/ 714  38.2%  loss 1.1450  ema 1.1613  acc 0.696  lr 1.37e-05  eta 12:41  ▁▂▄▆▃▂
 ```
+
+从左到右：第几步 / 总步数、百分比、当前 loss、**EMA(0.9) 平滑值**（这才是趋势）、
+`token_acc`、学习率、**ETA 预计剩余时间**、最后那串方块是最近 28 步的走势（一眼看出在降还是在抖）。
+
+同时每 `--plot-every 20` 步会把 `runs/sft/loss.svg` 重画一次 —— 想看曲线就把它拖进浏览器，
+或者用 `scp` 拉回本地双击打开；不想画图加 `--plot-every 0`。
 
 <!-- 待回填：把 report.md 里真实的 loss 表 / 损失图贴到这里 -->
 
@@ -543,24 +544,35 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | `token_acc` | 稳步升（0.4 → 0.8+） | 停在 0.3 附近 → 数据太少/太难 |
 | `grad` | 平稳（0.1–5） | 尖峰 >20 → 梯度爆炸，开 `max_grad_norm` 或降 lr |
 
-### 7.5 损失图（终端里也能看）
+### 7.5 损失图
 
-`report.md` 里会附一张 ASCII 走势图，不装 matplotlib 也能判断"到底在不在学"：
+`report.md` 里就是一行图片语法（GitHub / VS Code / 浏览器都能直接显示，不用装 matplotlib）：
 
-```
-  loss 走势 (min 0.412 / max 2.174)
-   2.174 |●
-   1.881 | ●
-   1.587 |  ●
-   1.294 |   ●●
-   1.000 |     ●●
-   0.706 |       ●●
-   0.412 |         ●●●
-         +----------------------------------------------
-          step 1 → 36
+```text
+![loss 曲线](loss.svg)
 ```
 
-<!-- 待回填：真实损失图 -->
+（`loss.svg` 是训练时生成的；没跑过训练之前这张图显示不出来，是正常的。）
+
+图里两条线：**浅色 = 每一步的原始 loss**（抖，正常），**深色 = EMA(0.9)**（趋势，看这条）。
+判读就三句话：EMA 往下 → 在学；EMA 走平但 `token_acc` 还在涨 → 在学格式；两条都平 → 到瓶颈。
+
+<!-- 待回填：真实损失图 -->### 7.5.1 想在浏览器里看？开 TensorBoard
+
+`loss.svg` 是「拍快照」，TensorBoard 是「实时交互」。加一个开关就行：
+
+```bash
+python 01-监督微调-SFT/code/train_sft.py --dataset trl-lib/Capybara --limit 2000 --tensorboard
+```
+
+日志写在 `01-监督微调-SFT/runs/sft/tb/`。云上用 AutoDL 的 AutoPanel 时，把它链到面板认的目录：
+
+```bash
+ln -sfn /root/Agentic-Post-training/01-监督微调-SFT/runs/sft/tb /root/tf-logs/sft
+```
+
+然后 AutoDL 控制台 → AutoPanel → TensorBoard。完整步骤（含 2、3 章并排对比、看不到曲线怎么排查）
+见 `00-开始之前/cloud-setup.md` §12.4。
 
 ### 7.6 训练前后对比
 
@@ -583,6 +595,11 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | 参数是不是 JSON | 常是自然语言 | `{"path": "calculator.py"}` |
 | 会不会等工具结果 | 不会（没有"轮"的概念） | 会先读再改，最后给结论 |
 | 会不会停 | 继续瞎编 | 输出 `<|im_end|>` 收尾 |
+
+读这段时的两个常见误会：
+
+- **训练后算错了**（比如 `-50629795314827` 这种）：不是脚本的 bug，是 0.6B 本来就背不下来 14 位数字。要看算术别用 SFT 判，看第 3 章的 GRPO。
+- **训练后开头是空的 `<think>\n\n</think>`**：Qwen3 非思考模式就是这个形态（第 5 节讲过），不是模板坏了。
 
 > 注意：**2 条数据只能验证流水线通不通，不能真的教会能力。** 想看到明显变化，至少 100+ 条同格式轨迹（见 00 章"数据从哪来"）。
 
@@ -636,8 +653,8 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ### 9.3 产物
 
-- `ckpt/sft-agent/`：可继续做蒸馏 / RL 的**起点模型**
-- `runs/sft/report.md`：这次训练的证据（loss、前后对比），也是排查问题的第一手材料
+- `01-监督微调-SFT/ckpt/sft-agent/`：可继续做蒸馏 / RL 的**起点模型**
+- `01-监督微调-SFT/runs/sft/report.md`：这次训练的证据（loss、前后对比），也是排查问题的第一手材料
 
 ---
 
@@ -659,7 +676,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ## 11. 练习与自测
 
-1. **看掩码**：跑 `python 01-监督微调-SFT/code/train_sft.py --inspect`，打开 `runs/sft/tokens.txt`，找到第 4 条消息（`tool_response`）——确认它的每一行都是 `0`。再找到最后一条 assistant 的 `<think>`——确认它被监督了。
+1. **看掩码**：跑 `python 01-监督微调-SFT/code/train_sft.py --inspect`，打开 `01-监督微调-SFT/runs/sft/tokens.txt`，找到第 4 条消息（`tool_response`）——确认它的每一行都是 `0`。再找到最后一条 assistant 的 `<think>`——确认它被监督了。
 2. **改数据**：加第 3 条轨迹，让它**先跑测试看到报错、再读文件**（顺序与现有样例相反），重跑，看掩码条的形状有没有变、模型有没有学到这个顺序。
 3. **对照实验**：把 `assistant_only_loss=True` 改成 `False` 再训一次，用同一个 prompt 推理——你应该能直观看到"复述用户问题"的现象。
 4. **算比例**：把 `--epochs` 从 3 改成 1，比较 `num_tokens` 与 `166 × 2 × epoch`，确认你真的只学了该学的部分。

@@ -26,7 +26,7 @@
     sft_loss.py     手算交叉熵（--explain-loss）
     train_sft.py    就是你正在看的这个：解析参数、按顺序调上面几个
 
-产物（都在仓库根目录下）
+产物（都在本章目录 01-监督微调-SFT/ 下）
 ------------------------
     runs/sft/report.md     总报告，跑完发给我
     runs/sft/report.json   机器可读版
@@ -39,10 +39,10 @@ from __future__ import annotations
 
 import argparse
 
-from common import LOCAL_JSONL, RUN_DIR, hr
+from common import LOCAL_JSONL, RUN_DIR, hr, train_runtime
 from sft_data import load_records, stage_read
 from sft_loss import explain_loss
-from sft_report import chart, write_report
+from sft_report import write_report
 from sft_template import stage_batch, stage_template, stage_tokens
 from sft_trainer import stage_before_after, train
 
@@ -66,6 +66,9 @@ def parse_args():
     ap.add_argument("--max-steps", type=int, default=None)
     ap.add_argument("--no-eval", action="store_true", help="跳过训练前后生成对比")
     ap.add_argument("--gen-tokens", type=int, default=220, help="生成对比时最多新生成多少 token")
+    ap.add_argument("--tensorboard", action="store_true",
+                    help="把日志写进 <章节>/runs/<x>/tb，供 TensorBoard / AutoPanel 查看")
+    ap.add_argument("--plot-every", type=int, default=20, help="每多少步重画一次 runs/sft/loss.svg（0=不画）")
     ap.add_argument("--fp32", action="store_true", help="不用 bf16")
     return ap.parse_args()
 
@@ -111,25 +114,25 @@ def main() -> None:
         args.epochs,
         args.max_steps,
         bf16=not args.fp32,
+        plot_every=args.plot_every,
+        tb=args.tensorboard,
         before_hook=None if args.no_eval else grab_samples,
     )
     if rows:
-        print("\n" + chart(rows))
+        print(f"\n  曲线图：{RUN_DIR / 'loss.svg'}")
     if pre and post:
         d = pre["eval_loss"] - post["eval_loss"]
         print(f"\n  held-out -ln p：{pre['eval_loss']:.4f} → {post['eval_loss']:.4f}"
               f"（{'下降' if d > 0 else '上升'} {abs(d):.4f}）")
 
-    runtime = 0.0
-    if trainer.state.log_history:
-        runtime = trainer.state.log_history[-1].get("train_runtime", 0) or 0.0
+    runtime = train_runtime(trainer)
     meta = {
         "模型": args.model,
         "数据": f"{src}（训练 {len(records)} 条 / 评测 {len(eval_records)} 条）",
         "epochs": args.epochs,
         "held-out -ln p（训练前）": f"{pre['eval_loss']:.4f}" if pre else "未评测",
         "held-out -ln p（训练后）": f"{post['eval_loss']:.4f}" if post else "未评测",
-        "耗时(s)": round(float(runtime), 1),
+        "耗时(s)": round(runtime, 1) if runtime else "未记录",
     }
     write_report(meta, before, after, rows)
 

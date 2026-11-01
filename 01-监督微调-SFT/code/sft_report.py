@@ -1,5 +1,5 @@
 """
-报告：终端 ASCII 图 + runs/sft/report.md。
+报告：loss.svg 曲线 + runs/sft/report.md。
 
 report.md 是给你回传给教程用的——里面已经有环境、前后 held-out 指标、
 损失表、损失图、生成对比。跑完直接把这个文件发回来就行。
@@ -8,26 +8,9 @@ report.md 是给你回传给教程用的——里面已经有环境、前后 hel
 from __future__ import annotations
 
 import json
+import math
 
 from common import RUN_DIR
-
-
-def chart(rows, width=46) -> str:
-    """把 loss 序列画成 ASCII 走势图（终端里也能看见「在下降」）。"""
-    losses = [r["loss"] for r in rows]
-    if len(losses) < 2:
-        return ""
-    lo, hi = min(losses), max(losses)
-    span = (hi - lo) or 1.0
-    out = [f"  loss 走势 (min {lo:.3f} / max {hi:.3f})"]
-    idx = [round(i * (len(losses) - 1) / (width - 1)) for i in range(width)]
-    for level in range(6, -1, -1):
-        thr = lo + span * level / 6
-        line = "".join("●" if losses[i] >= thr else " " for i in idx)
-        out.append(f"  {thr:6.3f} |{line}")
-    out.append("         +" + "-" * width)
-    out.append(f"          step {rows[0]['step']} → {rows[-1]['step']}")
-    return "\n".join(out)
 
 
 def write_report(meta, before, after, rows) -> None:
@@ -35,11 +18,14 @@ def write_report(meta, before, after, rows) -> None:
     md = ["# SFT 运行报告", ""]
     for k, v in meta.items():
         md.append(f"- **{k}**：{v}")
-    md += ["", "## 损失", "", "| step | loss | lr | grad_norm | token_acc |", "|---|---|---|---|---|"]
-    for r in rows:
-        md.append(f"| {r['step']} | {r['loss']:.4f} | {r['lr']:.2e} | {r['grad_norm']:.3f} | {r['tok_acc']:.3f} |")
+    md += ["", "## 损失", "", "![loss 曲线](loss.svg)", ""]
     if rows:
-        md += ["", "```", chart(rows), "```"]
+        md += ["每 20 步刷新一次；完整逐 step 数据见同目录 `loss.csv`。", ""]
+        every = max(1, math.ceil(len(rows) / 40))
+        md += ["| step | loss | lr | grad_norm | token_acc |", "|---|---|---|---|---|"]
+        for r in rows[::every]:
+            md.append(f"| {r['step']} | {r['loss']:.4f} | {r['lr']:.2e} | {r['grad_norm']:.3f} | {r['tok_acc']:.3f} |")
+        md += ["", f"（只列每 {every} 步一行，共 {len(rows)} 步）"]
     md += ["", "## 训练前 vs 训练后（held-out 生成）", ""]
     for b, a in zip(before, after):
         md += [f"### prompt：`{b['prompt'][:120]}`", "", "**训练前**：", "```", b["output"], "```", ""]
