@@ -14,7 +14,8 @@ import os
 import sys
 import time
 
-from common import LOG_EVERY, safe_save,  CKPT_DIR, RUN_DIR, fmt_eta, hr, plot_svg, spark
+from common import (LOG_EVERY, safe_save, CKPT_DIR, RUN_DIR, csv_append,
+                    fmt_eta, hr, plot_svg, spark)
 from grpo_rewards import accuracy_reward, format_reward
 
 
@@ -34,6 +35,12 @@ def train(rows, model_name: str, epochs: float, max_steps: int, num_gen: int,
 
         def __init__(self):
             self.rows = []
+            self.csv = RUN_DIR / "loss.csv"
+            try:
+                if self.csv.exists():
+                    self.csv.unlink()      # 新一轮从零开始，别把上次的接在后面
+            except Exception:
+                pass
             self.ema = None
             self.t0 = time.time()
             self.tty = sys.stdout.isatty()
@@ -61,6 +68,7 @@ def train(rows, model_name: str, epochs: float, max_steps: int, num_gen: int,
                 "len": round(float(logs.get("completions/mean_length", 0) or 0), 1),
                 "clip": round(float(logs.get("completions/clipped_ratio", 0) or 0), 3),
             }
+            csv_append(self.csv, r)     # 先落盘：后面崩了也留得住
             self.rows.append(r)
             self.ema = r["loss"] if self.ema is None else 0.9 * self.ema + 0.1 * r["loss"]
             if self.tb is not None and getattr(self.tb, "tb_writer", None) is not None:

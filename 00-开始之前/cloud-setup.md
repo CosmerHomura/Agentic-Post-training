@@ -440,7 +440,7 @@ ls -lh 02-蒸馏/ckpt/distill-agent/           # 权重
 ls -lh 02-蒸馏/runs/distill/                 # loss.svg / loss.csv / report.md
 ```
 
-如果只是想要一张损失曲线，`runs/<x>/loss.csv` 里每一步都有，不用重训——把 `loss.csv` 发我也行。
+`runs/<x>/loss.csv` 是**每一步当场追加**的（`LossPrinter` 里写，不依赖后面任何一步），所以哪怕崩在评估或报告，曲线数据也一定还在——直接把它发我就能重画，不用重训。
 
 两个环境变量（不用改代码）：
 

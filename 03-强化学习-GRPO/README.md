@@ -427,6 +427,7 @@ python 03-强化学习-GRPO/code/train_grpo.py --dataset trl-lib/DeepMath-103K -
 | `code/grpo_rollout.py` | 阶段 2~3：模板、采 G 条并打分、held-out `pass@1` |
 | `code/grpo_trainer.py` | 阶段 5：GRPOTrainer + 训练前后各测一次 |
 | `code/grpo_report.py` | `loss.svg` 双曲线（loss + reward）+ `03-强化学习-GRPO/runs/grpo/report.md` |
+| `runs/grpo/loss.csv` | 每步 loss / reward，训练中逐步追加（崩了也在） |
 | `code/grpo_loss.py` | 第 7 节那套手算（`--explain-loss`） |
 
 你以后要换奖励函数，只需要动 `grpo_rewards.py` 一个文件。

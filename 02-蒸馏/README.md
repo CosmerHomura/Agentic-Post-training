@@ -395,7 +395,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ### 6.4 损失图
 
-训练中每 20 步重画 `02-蒸馏/runs/distill/loss.svg`，`report.md` 里直接 `![loss 曲线](loss.svg)` 引用它（**没跑过训练时这张图不存在，属正常**）；
+`report.md` 里直接 `![loss 曲线](loss.svg)` 引用它（**没跑过训练时这张图不存在，属正常**）；每一步的指标在训练过程中就追加进 `runs/distill/loss.csv`，**中途崩了也留得住**，不用从头再跑一遍才知道曲线长什么样；
 终端里同步显示一行实时进度（含 EMA 与最近 28 步的方块走势）。
 
 <!-- 待回填：真实损失图 -->

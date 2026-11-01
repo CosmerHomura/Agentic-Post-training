@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import csv
 import os
 import sys
 from pathlib import Path
@@ -217,3 +218,23 @@ def safe_run(name: str, fn, *a, **kw):
     except Exception as e:          # noqa: BLE001
         print(f"  ⚠ {name} 失败（已保存的权重/日志不受影响）：{type(e).__name__}: {e}")
         return None
+
+
+def csv_append(path: Path, row: dict) -> None:
+    """把一步的指标追加到 csv（训练中途崩了也能留下历史，不用从头再跑）。"""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        new = not path.exists() or path.stat().st_size == 0
+        with path.open("a", newline="", encoding="utf-8") as fh:
+            if not new:                      # 沿用第一行写下的表头
+                with path.open(encoding="utf-8") as rh:
+                    fieldnames = next(csv.reader(rh), list(row.keys()))
+            else:
+                fieldnames = list(row.keys())
+            w = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+            if new:
+                w.writeheader()
+            w.writerow(row)
+            fh.flush()
+    except Exception as e:      # 落盘失败不该拖垮训练
+        print(f"  ⚠ 写 {path.name} 失败：{e}")
