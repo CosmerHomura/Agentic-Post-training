@@ -447,6 +447,25 @@ def strip_comments(text):
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
+IMG_SVG = re.compile(r'<img\b[^>]*?\bsrc="([^"]+\.svg)"[^>]*>')
+
+
+def inline_svg(html, base_dir):
+    """把章节里的 .svg 图片内联成 SVG（站点是单文件，外链图片在 file:// 下也能显示）。"""
+
+    def rep(m):
+        src = m.group(1)
+        path = os.path.join(ROOT, base_dir, src)
+        if not os.path.exists(path):
+            return m.group(0)
+        svg = io.open(path, encoding="utf-8").read()
+        svg = re.sub(r"<\?xml[^>]*\?>", "", svg).strip()
+        svg = re.sub(r'(<svg\b[^>]*?)\s+width="[^"]*"\s+height="[^"]*"', r"\1", svg, count=1)
+        return '<figure class="fig">' + svg + "</figure>"
+
+    return IMG_SVG.sub(rep, html)
+
+
 def build_chapter(cid, folder, title, subtitle, slug_map):
     path = os.path.join(ROOT, folder, "README.md")
     text = io.open(path, encoding="utf-8").read()
@@ -511,6 +530,7 @@ def build_chapter(cid, folder, title, subtitle, slug_map):
         # 任务清单：- [ ] / - [x] → 带方框的 li
         html = re.sub(r"<li>\[ \]\s*", '<li class="task">', html)
         html = re.sub(r"<li>\[[xX]\]\s*", '<li class="task done">', html)
+        html = inline_svg(html, folder)
         sections.append({
             "id": sid,
             "title": stitle,

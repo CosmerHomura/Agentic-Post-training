@@ -512,13 +512,14 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 别只看 loss 曲线，看这三个数（report.md 里都有）：
 
-| 指标 | 从哪来 | 健康 |
-|---|---|---|
-| **held-out -ln p** | 100 条没参与训练的样本，训练前后各算一次 | 下降 15% 以上（如 2.1 → 1.4） |
-| **token_acc** | 训练日志 | 0.4 → 0.8 以上 |
-| **生成对比** | 同样的 prompt，前后各生成一次 | 训练后能套上 `<tool_call>{…}</tool_call>` 格式 |
+| 指标 | 从哪来 | 健康 | 本次实测（下面第 7.5/7.6 节就是这次的数据） |
+|---|---|---|---|
+| **held-out -ln p** | 100 条没参与训练的样本，训练前后各算一次 | 下降 15% 以上 | `1.5550 → 1.2990`，**−16.4%** ✅ |
+| **token_acc** | 训练日志 | 0.4 → 0.8 以上 | `0.600 → 0.792`（第 451 步最高，末步 0.701）✅ |
+| **生成对比** | 同样的 prompt，前后各生成一次 | 训练后能套上目标格式 | 两个用例格式都对，但内容会编 ✅/⚠ |
 
-前两个是数，第三个是眼睛；三个都变好才叫学会了。
+前两个是数，第三个是眼睛；三个都变好才叫学会了。这次是「数变好、眼睛看到形式对但内容不靠谱」——
+这正是 0.6B + 2000 条的合理结果，第 7.6 节逐条讲。
 
 ### 7.4 训练时终端长这样
 
@@ -534,7 +535,15 @@ step  273/ 714  38.2%  loss 1.1450  ema 1.1613  acc 0.696  lr 1.37e-05  eta 12:4
 同时每 `--plot-every 20` 步会把 `runs/sft/loss.svg` 重画一次 —— 想看曲线就把它拖进浏览器，
 或者用 `scp` 拉回本地双击打开；不想画图加 `--plot-every 0`。
 
-<!-- 待回填：把 report.md 里真实的 loss 表 / 损失图贴到这里 -->
+这次真跑的规模（`--dataset trl-lib/Capybara --limit 2000 --eval-size 100`，单卡 24G）：
+
+| 项 | 实际值 | 说明 |
+|---|---|---|
+| 总步数 | **714** | 1900 条 ÷ (batch 1 × grad_accum 8) × 3 epoch ≈ 713 |
+| 总耗时 | **1012.5 s ≈ 17 分钟** | 约 1.4 s/步，0.6B + 4096 上下文 + gradient checkpointing |
+| 学习率 | `2.00e-05 → 1.41e-08` | cosine + 3 步 warmup，末段已几乎为 0 |
+| `grad_norm` | `3.1 – 6.1`（第 1 步 16.0） | 第一个 step 尖峰正常；之后稳定在 3–6 |
+| `token_acc` | `0.600 → 0.792` | 首步 0.600，第 451 步最高 0.792，末步 0.701 |
 
 训练的每一行都要看三件事：
 
@@ -542,24 +551,33 @@ step  273/ 714  38.2%  loss 1.1450  ema 1.1613  acc 0.696  lr 1.37e-05  eta 12:4
 |---|---|---|
 | `loss` | 单调下降后趋稳 | 抖动剧烈 → lr 太大；不降 → 掩码错了（全是 -100） |
 | `token_acc` | 稳步升（0.4 → 0.8+） | 停在 0.3 附近 → 数据太少/太难 |
-| `grad` | 平稳（0.1–5） | 尖峰 >20 → 梯度爆炸，开 `max_grad_norm` 或降 lr |
+| `grad` | 平稳（3–6 就很好；第 1 步 10+ 正常） | 尖峰 >20 且持续 → 梯度爆炸，开 `max_grad_norm` 或降 lr |
 
-### 7.5 损失图
+### 7.5 损失图（这次真跑的）
 
-`report.md` 里就是一行图片语法（GitHub / VS Code / 浏览器都能直接显示，不用装 matplotlib）：
+![SFT 实测 loss 曲线](img/sft-loss.svg)
 
-```text
-![loss 曲线](loss.svg)
-```
+这就是 714 步的真实曲线：**浅色是每步原始 loss，深色是 EMA(0.9)**。文件是训练时自动生成的
+`runs/sft/loss.svg`（每 20 步重画一次），`report.md` 里一行 `![loss 曲线](loss.svg)` 直接引它。
+
+把这张图拆成三段看：
+
+| 区间 | 现象 | 读数 |
+|---|---|---|
+| 第 1–60 步 | 从 `1.86` 快速掉到 `1.34` | 三段里降得最快的一段：先学会高频格式（`<|im_start|>`、`<think>`、列表符号） |
+| 第 60–610 步 | 在 `1.0 – 1.4` 之间来回震荡 | 抖动幅度 ±0.2，来自 batch 组成（每条轨迹长度差好几倍），不是模型不稳定 |
+| 第 610–714 步 | 仍在 `0.93 – 1.46`，**没有回升** | lr 已降到 `1e-8`，说明没有过拟合；地板是 0.6B + 2000 条数据的能力上限 |
+
+全段统计：`min 0.65 / max 1.88 / 均值 1.19 / 标准差 0.19`。EMA 从 `1.9` 一路降到 `1.15` 左右。
+
+判读就三句话：**EMA 往下 → 在学；EMA 走平但 `token_acc` 还在涨 → 在学格式；两条都平 → 到瓶颈**。
+这次属于第二种：loss 走平到 1.1–1.2，而 `token_acc` 从 0.60 涨到 0.79、held-out 降了 16%——格式学会了。
 
 （`loss.svg` 是训练时生成的；没跑过训练之前这张图显示不出来，是正常的。）
 
-图里两条线：**浅色 = 每一步的原始 loss**（抖，正常），**深色 = EMA(0.9)**（趋势，看这条）。
-判读就三句话：EMA 往下 → 在学；EMA 走平但 `token_acc` 还在涨 → 在学格式；两条都平 → 到瓶颈。
+### 7.5.0 为什么 TensorBoard 里的 loss 像噪声
 
-<!-- 待回填：真实损失图 -->### 7.5.0 为什么 TensorBoard 里的 loss 像噪声
-
-先看一眼你的真实数字：held-out `1.5550 → 1.2988`（−16.5%），三个 epoch 的均值 `1.2637 / 1.1684 / 1.1392`。
+先看一眼你的真实数字：held-out `1.5550 → 1.2990`（−16.4%），三个 epoch 的均值 `1.2637 / 1.1684 / 1.1392`。
 **它是在学的**，只是「每一步的 loss」这个指标本身信噪比极低：
 
 | 为什么抖 | 具体原因 |
@@ -611,34 +629,76 @@ ln -sfn /root/Agentic-Post-training/01-监督微调-SFT/runs/sft/tb /root/tf-log
 然后 AutoDL 控制台 → AutoPanel → TensorBoard。完整步骤（含 2、3 章并排对比、看不到曲线怎么排查）
 见 `00-开始之前/cloud-setup.md` §12.4。
 
-### 7.6 训练前后对比
+### 7.6 训练前后对比（这次真跑的）
 
-同一批 prompt，训练前（基座）和训练后（SFT 完）各生成一次：
+同一批 prompt，训练前（`Qwen3-0.6B` 原始权重）和训练后（SFT 完的 `ckpt/sft-agent/`）各生成一次。
+下面两段都是 `report.md` 里的原文，只做了截断（生成上限 220 token，两段都在中途被切断）。
+
+#### 用例 1：开放问答（Capybara 里的真实样本）
+
+prompt：`Explain the significance of the friendship between Andy and Red in shaping Andy's character development.`
+
+**训练前**——一大段「我在想」的过程，迟迟不给答案，最后被 token 上限截断：
 
 ```
-  ── 同一类任务（修 bug） ──
-  prompt（最后一句）：calculator.py 里的测试失败了，请修好它。测试文件是 test_calculator.py。
-  模型输出：
-    ...
+<think>
+Okay, the user asked about the significance of Andy and Red's friendship in shaping his character
+development. Let me start by recalling the key points from the previous answer...
+First, I need to explain how their bond helps Andy. Maybe start by mentioning that their friendship
+provides emotional support... I should also touch on how their friendship helps Andy adapt to prison
+life... I need to make sure the explanation is clear and flows well. Maybe structure it as a narrative
+arc, starting with their initial meeting, the impact of their friendship, and the lasting effect on Andy. Also
 ```
 
-<!-- 待回填：report.md 里 before/after 两段原文 -->
+**训练后**——`<think>` 立刻收尾（空的），然后一段结构完整的四段式回答：
 
-怎么读这段对比：
+```
+<think>
+
+</think>
+
+The friendship between Andy and Red is a crucial element in shaping Andy's character development in
+"The Shawshank Redemption".
+
+Andy and Red are both inmates in the same prison, and they share a common goal: to escape from prison
+and live a normal life...
+As they grow closer, their friendship becomes more complex and nuanced...
+Moreover, their friendship also serves as a symbol of hope. It shows that even in the darkest
+```
+
+#### 用例 2：大数减法（同格式的算术题）
+
+prompt：`Determine the result obtained by evaluating 5338245-50629795848152. Numbers and symbols only, please.`
+
+**训练前**：在 think 里画竖式、数位读错，被截断，没给出答案。
+
+**训练后**：一行给答案，格式干净利落，但**算错了**：
+
+```
+5338245 - 50629795848152 = -50629795314727        ← 模型给的
+参考（数据里的真实答案）    -50629790509907        ← 差了 48 亿
+```
+
+#### 怎么读这两段
 
 | 看什么 | 训练前（基座） | 训练后（SFT） |
 |---|---|---|
-| 有没有 `<tool_call>` | 一般没有，或写成正文 Markdown | 出现结构化 `<tool_call>` |
-| 参数是不是 JSON | 常是自然语言 | `{"path": "calculator.py"}` |
-| 会不会等工具结果 | 不会（没有"轮"的概念） | 会先读再改，最后给结论 |
-| 会不会停 | 继续瞎编 | 输出 `<|im_end|>` 收尾 |
+| 会不会收尾 | 不会：一直「让我想想」，直到被截断 | 会：`<think></think>` 立刻闭合，直接进正文 |
+| 结构 | 一段流水账 | 四段式：定位→论据→递进→升华 |
+| 格式合规 | `False` / 无固定形态 | **`True`**（报告里两个用例都判 True） |
+| 事实对不对 | 谈不上（没结论） | 仍然不可靠：说 Red 也一起越狱了（原著里没有） |
+| 算术对不对 | 没算完 | 算错，差 48 亿 |
 
-读这段时的两个常见误会：
+三条结论：
 
-- **训练后算错了**（比如 `-50629795314827` 这种）：不是脚本的 bug，是 0.6B 本来就背不下来 14 位数字。要看算术别用 SFT 判，看第 3 章的 GRPO。
-- **训练后开头是空的 `<think>\n\n</think>`**：Qwen3 非思考模式就是这个形态（第 5 节讲过），不是模板坏了。
+1. **SFT 学的是「形」，不是「算」。** 它把「先 `<think>` 再正文、分段、收尾」这套形式背下来了，这是 2000 条数据 + 3 epoch 能给的全部；内容对不对取决于基座本身的知识和推理能力，0.6B 就这个水平。
+2. **空 `<think>
 
-> 注意：**2 条数据只能验证流水线通不通，不能真的教会能力。** 想看到明显变化，至少 100+ 条同格式轨迹（见 00 章"数据从哪来"）。
+</think>` 不是 bug。** Qwen3 在非思考模式下就是这样（第 5 节讲过模板逻辑），SFT 数据里也没有长思维链，模型没理由往里写东西。
+3. **算术不要用 SFT 判断。** 想让它真会算，得靠第 3 章的 GRPO：有 `ground_truth` 打分，算错就是 0 分，梯度自然会往「算对」的方向推。
+
+> 记住这个对照的意义：**held-out -ln p 降 16%、token_acc 从 0.60 到 0.79，对应到人眼就是「结构学会了」**。
+> 想要「能力也变了」，要么加数据量和模型规模，要么接上后面几步的 RL。
 
 ---
 
