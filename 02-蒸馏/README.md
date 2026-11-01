@@ -428,10 +428,65 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | `beta` | 散度选择器（见下表） | `1.0` | 先 `0.5` |
 | `temperature` | **同时**给生成与损失用 | `1.0` | 1.0~2.0；越高教师分布越软、信息越多也越抖 |
 | `max_completion_length` | 学生单条生成上限 | `512` | 多轮工具调用要调大；本脚本默认 160 |
-| `teacher_model` | 教师 | 必填 | 比学生大 1 个量级即可 |
+| `teacher_model` | 教师 | 必填 | 比学生大 3~5 倍、**词表必须与学生相同**（见下一节） |
 | `use_vllm` / `vllm_mode` | 用 vLLM 生成学生 rollout | `False` / `colocate` | 规模上来后必开 |
 | `max_tool_calling_iterations` | 允许的最多工具轮数 | — | 多轮 agent 时设 |
 | `remove_unused_columns` | 是否删掉数据集多余列 | `False` | 蒸馏里保持 `False` |
+
+### 教师模型怎么选（谁来教）
+
+本教程的默认配置写在 `02-蒸馏/code/common.py:23-24`：
+
+```python
+STUDENT = os.environ.get("STUDENT_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")   # 学生：被训练的那个
+TEACHER = os.environ.get("TEACHER_MODEL", "Qwen/Qwen2.5-1.5B-Instruct")   # 教师：只做前向，给分布
+```
+
+命令行可以随便换：
+
+```bash
+python 02-蒸馏/code/train_distill.py --teacher Qwen/Qwen2.5-7B-Instruct
+# 或者用环境变量
+TEACHER_MODEL=Qwen/Qwen2.5-3B-Instruct python 02-蒸馏/code/train_distill.py
+```
+
+**为什么是 1.5B 而不是 7B**——三个条件同时满足才叫合适的教师：
+
+| 条件 | 说明 | 1.5B 教 0.5B |
+|---|---|---|
+| ① **词表必须一致** | KL 是逐位置、逐 token 算的：`KL(p_T ‖ p_S)` 要求同一个位置上的两个分布长度相同。词表不同就得先做词表对齐（把教师 logits 投影到学生词表），工程量陡增 | ✅ 都是 Qwen2.5，词表 151936、tokenizer 同一套 |
+| ② **教师必须真的更强** | 教师不如学生时，学生是在向一个更差的分布靠，loss 能降但能力会退 | ✅ 1.5B 在绝大多数任务上强于 0.5B |
+| ③ **差距不能太大** | 差距过大时学生"够不着"：反向 KL 下学生的 `entropy` 会骤降（塌成教师 top-1 的复读机）；前向 KL 下学生被迫在教师的长尾上摊概率，输出变糊 | ✅ 3 倍差距属于舒服区间 |
+
+**规模怎么配**（bf16，教师只做前向，不算优化器）：
+
+| 学生 | 教师 | 教师显存 | 学生+优化器 | 合计（单卡） | 备注 |
+|---|---|---|---|---|---|
+| 0.5B | 1.5B | ≈3 GB | ≈6–8 GB | ≈11 GB | 本教程默认，16 GB 也能跑 |
+| 0.5B | 3B | ≈6 GB | ≈6–8 GB | ≈14 GB | 24 GB 舒服 |
+| 0.5B | 7B | ≈15 GB | ≈6–8 GB | ≈23 GB | 24 GB 临界，`--batch-size 1` |
+| 7B | 14B~32B | 28 GB+ | 需要 FSDP / LoRA | 多卡 | 工程问题优先于教学问题 |
+
+**怎么确认「这个教师真的比我强」**——别猜，跑 `--inspect`：
+
+```bash
+python 02-蒸馏/code/train_distill.py --inspect --teacher Qwen/Qwen2.5-1.5B-Instruct
+```
+
+第 5 阶段会打出**逐 token 的教师/学生 top-3 对照表**和平均前向 KL，据此判断：
+
+| 看到的 | 说明 | 怎么办 |
+|---|---|---|
+| 教师 top-1 概率普遍高于学生，KL 在 0.3–1.0 | 正常，教师确实更有把握 | 开训 |
+| KL ≈ 0（< 0.05），两边分布几乎一样 | 教师没提供额外信息 | 换更大的教师，别浪费时间 |
+| KL > 1.5，且学生 `entropy` 在训练中骤降到 < 0.3 | 差距太大，学生在硬抄 top-1 | 换小一号教师，或 `beta` 调到 0.5 / 0.0 |
+
+**几个容易踩的点**
+
+- 学生和教师要用**同一种版本**（都 `-Instruct`，或都 `-Base`）：instruct 版本带对话格式偏好，混用会让教师对学生开头几句给出很怪的分布。
+- 教师必须 `eval()` + `torch.no_grad()`，本脚本已处理；自己写时忘了会白吃显存和算力。
+- 教师用 bf16 加载（`dtype=torch.bfloat16`），fp32 的 7B 会直接 OOM。
+- 教师模型**不进 checkpoint**：`ckpt/distill-agent/` 里只有学生，别去里面找教师。
 
 ### β 的三个取值
 

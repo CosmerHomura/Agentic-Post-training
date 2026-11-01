@@ -29,6 +29,8 @@ _site/_diag.html
 _site/_dark.html
 _site/_check.js
 _site/_p_*.html
+_site/_*.txt
+_site/_*.py
 
 # 系统垃圾
 .DS_Store
