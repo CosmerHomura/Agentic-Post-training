@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import time
 
@@ -36,6 +37,17 @@ def train(rows, model_name: str, epochs: float, max_steps: int, num_gen: int,
             self.ema = None
             self.t0 = time.time()
             self.tty = sys.stdout.isatty()
+            self.tb = None          # TensorBoardCallback，训练器建好后 bind() 进来
+
+        def bind(self, trainer):
+            """找到 TensorBoard 回调，好在同一根事件流里多写一条平滑曲线。"""
+            try:
+                for cb in trainer.callback_handler.callbacks:
+                    if type(cb).__name__ == "TensorBoardCallback":
+                        self.tb = cb
+                        return
+            except Exception:
+                self.tb = None
 
         def on_log(self, args, state, control, logs=None, **kwargs):
             if not logs or "loss" not in logs:
@@ -51,6 +63,11 @@ def train(rows, model_name: str, epochs: float, max_steps: int, num_gen: int,
             }
             self.rows.append(r)
             self.ema = r["loss"] if self.ema is None else 0.9 * self.ema + 0.1 * r["loss"]
+            if self.tb is not None and getattr(self.tb, "tb_writer", None) is not None:
+                try:
+                    self.tb.tb_writer.add_scalar("train/loss_ema", self.ema, state.global_step)
+                except Exception:
+                    pass
             total = state.max_steps or 0
             pct = 100.0 * r["step"] / total if total else 0.0
             eta = ""
@@ -117,9 +134,14 @@ def train(rows, model_name: str, epochs: float, max_steps: int, num_gen: int,
         report_to=["tensorboard"] if tb else [],
         run_name=RUN_DIR.name,
     )
-    # TRL 1.16 的 *Config.__init__ 是显式参数列表，没有 logging_dir 这个入参，
-    # 只能构造完再赋值（TensorBoardCallback 是创建 Trainer 时才读它的）。
-    args.logging_dir = str(RUN_DIR / "tb")
+    # 两个都设，因为不同版本读的地方不一样：
+    #   transformers 5.x 的 TensorBoardCallback 只认环境变量 TENSORBOARD_LOGGING_DIR，
+    #   4.x 才读 args.logging_dir；TRL 1.16 的 *Config.__init__ 又不接受 logging_dir 入参。
+    # 不设的话，5.x 会退到 os.path.join(args.output_dir, "runs/<日期>_<主机名>")，很能跑偏。
+    tb_dir = str(RUN_DIR / "tb")
+    args.logging_dir = tb_dir
+    if tb:
+        os.environ["TENSORBOARD_LOGGING_DIR"] = tb_dir
     if tb and importlib.util.find_spec("tensorboard") is None:
         print('  ⚠ 没装 tensorboard，日志写不进去：pip install -i https://pypi.tuna.tsinghua.edu.cn/simple tensorboard')
 

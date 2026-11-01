@@ -68,6 +68,8 @@ def parse_args():
     ap.add_argument("--gen-tokens", type=int, default=220, help="生成对比时最多新生成多少 token")
     ap.add_argument("--tensorboard", action="store_true",
                     help="把日志写进 <章节>/runs/<x>/tb，供 TensorBoard / AutoPanel 查看")
+    ap.add_argument("--eval-steps", type=int, default=0,
+                    help="训练中每 N 步在 held-out 上评估一次（0 = 每 epoch 一次）")
     ap.add_argument("--plot-every", type=int, default=20, help="每多少步重画一次 runs/sft/loss.svg（0=不画）")
     ap.add_argument("--fp32", action="store_true", help="不用 bf16")
     return ap.parse_args()
@@ -116,6 +118,7 @@ def main() -> None:
         bf16=not args.fp32,
         plot_every=args.plot_every,
         tb=args.tensorboard,
+        eval_steps=args.eval_steps,
         before_hook=None if args.no_eval else grab_samples,
     )
     if rows:
