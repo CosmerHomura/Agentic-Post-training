@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import argparse
 
-from common import LOCAL_JSONL, MODEL_DEFAULT, print_env
+from common import safe_run, LOCAL_JSONL, MODEL_DEFAULT, print_env
 from grpo_data import load_rows, stage_read
 from grpo_loss import explain_loss
 from grpo_report import write_report
@@ -71,7 +71,7 @@ def parse_args():
     ap.add_argument("--eval-size", type=int, default=100, help="留出多少条做 held-out")
     ap.add_argument("--tensorboard", action="store_true",
                     help="把日志写进 <章节>/runs/<x>/tb，供 TensorBoard / AutoPanel 查看")
-    ap.add_argument("--plot-every", type=int, default=20, help="每多少步重画一次 runs/grpo/loss.svg（0=不画）")
+    ap.add_argument("--plot-every", type=int, default=0, help="每多少步重画一次 loss.svg（默认 0 = 只在结束时画一次）")
     return ap.parse_args()
 
 
@@ -114,7 +114,7 @@ def main() -> None:
     print()
     print(f"  曲线图：{RUN_DIR / 'loss.svg'}")
 
-    write_report(
+    safe_run("写报告", write_report, 
         {
             "model": args.model,
             "num_gen": args.num_generations,
@@ -130,6 +130,7 @@ def main() -> None:
             "post": post,
         }
     )
+    print("  报告：", RUN_DIR / "report.md")
 
 
 if __name__ == "__main__":

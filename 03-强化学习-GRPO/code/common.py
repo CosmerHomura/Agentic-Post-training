@@ -18,7 +18,8 @@ ROOT = STEP_DIR.parent
 
 # 产物跟着「这一章」走：runs/grpo 与 ckpt/grpo-agent 都建在 03-强化学习-GRPO/ 下，不往仓库根堆
 RUN_DIR = STEP_DIR / "runs" / "grpo"
-CKPT_DIR = STEP_DIR / "ckpt" / "grpo-agent"
+CKPT_DIR = Path(os.environ.get("CKPT_DIR") or (STEP_DIR / "ckpt" / "grpo-agent"))  # CKPT_DIR=... 可覆盖（磁盘紧时指到数据盘）
+LOG_EVERY = int(os.environ.get("LOG_EVERY", "10"))   # 非交互终端每 N 步打一行
 LOCAL_JSONL = STEP_DIR / "data" / "grpo_prompts.jsonl"
 
 MODEL_DEFAULT = os.environ.get("GRPO_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
@@ -178,3 +179,27 @@ def train_runtime(trainer):
             return float(rec["train_runtime"])
     return 0.0
 
+
+# 训练完成后的落盘：失败必须说清楚，不能让后面的评估/报告把权重一起带走。
+def safe_save(trainer, out_dir) -> bool:
+    try:
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        trainer.save_model(str(out_dir))
+        print(f"  权重已存：{out_dir}")
+        return True
+    except Exception as e:          # noqa: BLE001 - 这里就是要抓住一切
+        print(f"  ⚠ 保存权重失败：{type(e).__name__}: {e}")
+        print("    80% 是磁盘满或目录不可写。先看：df -h  /  du -sh ~/.cache/*")
+        print("    腾出空间后可以只补存这一步（不用重训）：")
+        print(f"      CKPT_DIR=<新路径> python <本脚本> --inspect   # 只是为了确认路径")
+        print("    或者直接把环境变量 CKPT_DIR 指到数据盘再重跑。")
+        return False
+
+
+def safe_run(name: str, fn, *a, **kw):
+    """跑一个"训练之后"的步骤；挂了只报警，不拖垮整条流水线。"""
+    try:
+        return fn(*a, **kw)
+    except Exception as e:          # noqa: BLE001
+        print(f"  ⚠ {name} 失败（已保存的权重/日志不受影响）：{type(e).__name__}: {e}")
+        return None

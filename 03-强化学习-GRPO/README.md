@@ -333,7 +333,7 @@ r_{i,t} = \frac{\pi_\theta\left(a_{i,t} \mid s_{i,t}\right)}{\pi_{\text{old}}\le
 | `--eval-size` | **100** | held-out（算 pass@1） | 200 |
 | `--dataset` / `--data` / `--split` | 无 / `data/grpo_prompts.jsonl` / `train` | 数据来源 | `trl-lib/DeepMath-103K` |
 | `--tensorboard` | 关 | 日志写 `<章节>/runs/grpo/tb` | 想边训边看 |
-| `--plot-every` | **20** | 每 N 步重画 `loss.svg`（双曲线） | 0／5 |
+| `--plot-every` | **0** = 只在结束时画一次 | 每 N 步重画 `loss.svg`（双曲线） | 20（想中途看） |
 | `--inspect` / `--explain-loss` | 关 | 只跑链路 / 手算优势与 clip | 调试用 |
 
 ### 8.2 训练超参（`grpo_trainer.py`）

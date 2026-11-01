@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import argparse
 
-from common import LOCAL_JSONL, STUDENT, TEACHER, print_env
+from common import safe_run, LOCAL_JSONL, STUDENT, TEACHER, print_env
 from distill_data import load_prompts, stage_read
 from distill_loss import explain_loss
 from distill_probe import probe_kl, stage_distributions, stage_generate
@@ -69,7 +69,7 @@ def parse_args():
     ap.add_argument("--gen-tokens", type=int, default=160, help="学生生成 / 教师对比的长度上限")
     ap.add_argument("--tensorboard", action="store_true",
                     help="把日志写进 <章节>/runs/<x>/tb，供 TensorBoard / AutoPanel 查看")
-    ap.add_argument("--plot-every", type=int, default=20, help="每多少步重画一次 runs/distill/loss.svg（0=不画）")
+    ap.add_argument("--plot-every", type=int, default=0, help="每多少步重画一次 loss.svg（默认 0 = 只在结束时画一次）")
     ap.add_argument("--data", default=str(LOCAL_JSONL))
     ap.add_argument("--dataset", default=None, help="HF 数据集名，如 trl-lib/ultrafeedback-prompt")
     ap.add_argument("--split", default="train")
@@ -137,7 +137,8 @@ def main() -> None:
         "pre": pre,
         "post": post,
     }
-    write_report(payload)
+    safe_run("写报告", write_report, payload)
+    print("  报告：", RUN_DIR / "report.md")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import os
 import sys
 import time
 
-from common import CKPT_DIR, RUN_DIR, fmt_eta, hr, plot_svg, spark
+from common import LOG_EVERY, safe_save,  CKPT_DIR, RUN_DIR, fmt_eta, hr, plot_svg, spark
 
 
 def train(rows, student_name, teacher_name, epochs: float, max_steps: int | None,
@@ -68,6 +68,8 @@ def train(rows, student_name, teacher_name, epochs: float, max_steps: int | None
                 except Exception:
                     pass
             total = state.max_steps or 0
+            if LOG_EVERY > 1 and r["step"] % LOG_EVERY and r["step"] != total:
+                return
             pct = 100.0 * r["step"] / total if total else 0.0
             eta = ""
             if total and r["step"]:
@@ -159,15 +161,17 @@ def train(rows, student_name, teacher_name, epochs: float, max_steps: int | None
 
     print()
     result = trainer.train()
-    trainer.save_model(args.output_dir)
+    safe_save(trainer, args.output_dir)   # 先落盘，后面的评估/报告挂掉也不丢
 
     post = {}
     if before_hook is not None:
-        trainer.model.eval()
-        post = before_hook(trainer.model, trainer.teacher_model)
-        print(f"  训练后 held-out 平均 KL：{post['kl']:.4f}")
+        try:
+            trainer.model.eval()
+            post = before_hook(trainer.model, trainer.teacher_model)
+            print(f"  训练后 held-out 平均 KL：{post['kl']:.4f}")
+        except Exception as e:      # noqa: BLE001
+            print(f"  ⚠ 训练后评估失败（权重已保存，不受影响）：{type(e).__name__}: {e}")
 
     print()
     print(f"  训练结束：{result.metrics}")
-    print(f"  权重已存：{args.output_dir}")
     return trainer, printer.rows, pre, post

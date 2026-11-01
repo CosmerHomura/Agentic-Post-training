@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import argparse
 
-from common import LOCAL_JSONL, RUN_DIR, hr, train_runtime
+from common import safe_run, LOCAL_JSONL, RUN_DIR, hr, train_runtime
 from sft_data import load_records, stage_read
 from sft_loss import explain_loss
 from sft_report import write_report
@@ -70,7 +70,7 @@ def parse_args():
                     help="把日志写进 <章节>/runs/<x>/tb，供 TensorBoard / AutoPanel 查看")
     ap.add_argument("--eval-steps", type=int, default=0,
                     help="训练中每 N 步在 held-out 上评估一次（0 = 每 epoch 一次）")
-    ap.add_argument("--plot-every", type=int, default=20, help="每多少步重画一次 runs/sft/loss.svg（0=不画）")
+    ap.add_argument("--plot-every", type=int, default=0, help="每多少步重画一次 loss.svg（默认 0 = 只在结束时画一次）")
     ap.add_argument("--fp32", action="store_true", help="不用 bf16")
     return ap.parse_args()
 
@@ -137,7 +137,8 @@ def main() -> None:
         "held-out -ln p（训练后）": f"{post['eval_loss']:.4f}" if post else "未评测",
         "耗时(s)": round(runtime, 1) if runtime else "未记录",
     }
-    write_report(meta, before, after, rows)
+    safe_run("写报告", write_report, meta, before, after, rows)
+    print("  报告：", RUN_DIR / "report.md")
 
 
 if __name__ == "__main__":

@@ -437,8 +437,8 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | `--limit` | **2000** | 从官方数据集取前 N 条 prompt | 100／5000 |
 | `--eval-size` | **100** | held-out 条数（测平均 KL） | 200 |
 | `--dataset` / `--data` / `--split` | 无 / `data/distill_prompts.jsonl` / `train` | 数据来源 | `trl-lib/ultrafeedback-prompt` |
-| `--tensorboard` | 关 | 日志写 `<章节>/runs/distill/tb` | 想边训边看 |
-| `--plot-every` | **20** | 每 N 步重画 `loss.svg` | 0／5 |
+| `--tensorboard` | 关 | 日志写 `<章节>/runs/distill/tb`，**不加就没有 TensorBoard 图** | 想边训边看就加 |
+| `--plot-every` | **0** = 只在结束时画一次 | 每 N 步重画 `loss.svg` | 20（想中途看） |
 | `--inspect` / `--explain-loss` / `--no-eval` | 关 | 只跑链路 / 手算 KL / 跳过前后对比 | 调试用 |
 
 ### 7.2 训练超参（`distill_trainer.py`）

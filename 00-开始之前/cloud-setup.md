@@ -401,6 +401,54 @@ ln -sfn /root/Agentic-Post-training/03-强化学习-GRPO/runs/grpo/tb   /root/tf
 
 ---
 
+### 12.5 训练跑完才报错，结果全没了怎么办
+
+先说现在脚本的顺序（三个章节一样）：
+
+```
+训练结束 → 立刻 save_model 落盘 → 才做 held-out 评估 → 才写 report.md / 画图
+```
+
+也就是说**权重是第一个存的**。以前是「训练完 → 评估 → 报告 → 存权重」，评估里任何一个小错都会让权重一起丢掉——这就是你那次「啥也没保存」的成因。
+
+现在的行为：
+
+| 哪一步挂了 | 你会看到 | 还剩下什么 |
+|---|---|---|
+| `save_model` 失败 | `⚠ 保存权重失败：OSError/ENOSPC ...` | 训练日志、`loss.svg`、`loss.csv` 还在 |
+| 训练后评估失败 | `⚠ 训练后评估失败（权重已保存，不受影响）` | **权重在**、`report.json` 里缺 `post` 段 |
+| 写报告失败 | `⚠ 写报告失败` | **权重在**、`loss.csv` 在，`report.md` 可能不全 |
+
+**最常见的还是磁盘满**：训练时不写盘，最后要写一份 1–2.5GB 的权重才发现没空间。所以开跑前扫一眼：
+
+```bash
+df -h /                         # 系统盘还剩多少
+du -sh ~/.cache/pip ~/.cache/huggingface 2>/dev/null
+```
+
+空间紧就把产物直接指到数据盘（不用改代码）：
+
+```bash
+CKPT_DIR=/root/autodl-tmp/ckpt/distill-agent \
+python 02-蒸馏/code/train_distill.py --dataset trl-lib/ultrafeedback-prompt --limit 2000
+```
+
+报错后先看这三处在不在，再决定要不要重训：
+
+```bash
+ls -lh 02-蒸馏/ckpt/distill-agent/           # 权重
+ls -lh 02-蒸馏/runs/distill/                 # loss.svg / loss.csv / report.md
+```
+
+如果只是想要一张损失曲线，`runs/<x>/loss.csv` 里每一步都有，不用重训——把 `loss.csv` 发我也行。
+
+两个环境变量（不用改代码）：
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `LOG_EVERY` | `10` | 每多少步打一行进度；`LOG_EVERY=1` 回到逐 step（日志会很大） |
+| `CKPT_DIR` | `<章节>/ckpt/<x>` | 权重存哪儿；磁盘紧就指到 `/root/autodl-tmp/ckpt/...` |
+
 ## 13. 云上四个坑
 
 | 现象 | 原因 | 处理 |

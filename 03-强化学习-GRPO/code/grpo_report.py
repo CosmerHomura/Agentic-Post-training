@@ -37,7 +37,7 @@ def write_report(p: dict) -> None:
             f"| {r['step']} | {r['loss']} | {r['reward']} | {r['reward_std']} | {r['kl']} | {r['len']} | {r['clip']} |"
         )
     L.append("\n![loss / reward 曲线](loss.svg)\n")
-    L.append("（每 20 步刷新一次；完整数据见 `loss.csv`）\n")
+    L.append("（训练结束时生成；完整数据见 `loss.csv`）\n")
 
     L.append("## 3. held-out 评测（训练前 vs 训练后）\n")
     if p.get("pre") and p.get("post"):

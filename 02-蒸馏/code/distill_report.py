@@ -45,7 +45,7 @@ def write_report(payload: dict) -> None:
             f"| {r['entropy']} | {r['mean_len']} | {r['clip_ratio']} |"
         )
     L.append("\n![loss 曲线](loss.svg)\n")
-    L.append("（每 20 步刷新一次；完整数据见 `loss.csv`）\n")
+    L.append("（训练结束时生成；完整数据见 `loss.csv`）\n")
 
     L.append("## 3. held-out 评测（训练前 vs 训练后）\n")
     if payload.get("pre") and payload.get("post"):

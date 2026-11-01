@@ -503,7 +503,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | 产物 | 内容 |
 |---|---|
 | `01-监督微调-SFT/runs/sft/report.md` | 总报告：环境、held-out 前/后 -ln p、loss 曲线、loss 表、生成对比 |
-| `01-监督微调-SFT/runs/sft/loss.svg` | 折线图（原始 loss + EMA），训练中每 20 步重画一次 |
+| `01-监督微调-SFT/runs/sft/loss.svg` | 折线图（原始 loss + EMA），训练结束时画一次 |
 | `01-监督微调-SFT/runs/sft/tokens.txt` | 全量 token / label / mask 表（解剖样本，650 行） |
 | `01-监督微调-SFT/runs/sft/loss.csv` | 每步 loss，可拿去画图 |
 | `01-监督微调-SFT/ckpt/sft-agent/` | 训练好的权重，后面几步的起点 |
@@ -532,8 +532,7 @@ step  273/ 714  38.2%  loss 1.1450  ema 1.1613  acc 0.696  lr 1.37e-05  eta 12:4
 从左到右：第几步 / 总步数、百分比、当前 loss、**EMA(0.9) 平滑值**（这才是趋势）、
 `token_acc`、学习率、**ETA 预计剩余时间**、最后那串方块是最近 28 步的走势（一眼看出在降还是在抖）。
 
-同时每 `--plot-every 20` 步会把 `runs/sft/loss.svg` 重画一次 —— 想看曲线就把它拖进浏览器，
-或者用 `scp` 拉回本地双击打开；不想画图加 `--plot-every 0`。
+曲线在**训练结束时**写一次 `runs/sft/loss.svg`（默认 `--plot-every 0`）——反正盯着终端也看不出走势；想中途刷新就加 `--plot-every 20`。终端默认每 10 步打一行（`LOG_EVERY` 环境变量可改）。
 
 这次真跑的规模（`--dataset trl-lib/Capybara --limit 2000 --eval-size 100`，单卡 24G）：
 
@@ -558,7 +557,7 @@ step  273/ 714  38.2%  loss 1.1450  ema 1.1613  acc 0.696  lr 1.37e-05  eta 12:4
 ![SFT 实测 loss 曲线](img/sft-loss.svg)
 
 这就是 714 步的真实曲线：**浅色是每步原始 loss，深色是 EMA(0.9)**。文件是训练时自动生成的
-`runs/sft/loss.svg`（每 20 步重画一次），`report.md` 里一行 `![loss 曲线](loss.svg)` 直接引它。
+`runs/sft/loss.svg`（训练结束时画一次），`report.md` 里一行 `![loss 曲线](loss.svg)` 直接引它。
 
 把这张图拆成三段看：
 
@@ -720,7 +719,7 @@ prompt：`Determine the result obtained by evaluating 5338245-50629795848152. Nu
 | `--max-steps` | 无 | 覆盖 epochs，跑固定步数 | 20（快速验证） |
 | `--gen-tokens` | **220** | 前后对比的生成上限 | 512（想看完整答案） |
 | `--eval-steps` | **0** = 每 epoch 一次 | 训练中每 N 步评估 | 50（要密一点的 `eval/loss`） |
-| `--plot-every` | **20** | 每 N 步重画 `loss.svg` | 0（不画）／5（看细节） |
+| `--plot-every` | **0** = 只在训练结束时画一次 | 每 N 步重画 `loss.svg` | 20（想中途看） |
 | `--tensorboard` | 关 | 日志写到 `<章节>/runs/sft/tb` | 想边训边看就加 |
 | `--fp32` | 关（默认 bf16） | 不用 bf16 | 老卡不支持 bf16 时 |
 | `--no-eval` | 关 | 跳过训练前后生成对比 | 只想快点跑完 |
