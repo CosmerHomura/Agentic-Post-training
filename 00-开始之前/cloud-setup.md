@@ -390,6 +390,7 @@ ln -sfn /root/Agentic-Post-training/03-强化学习-GRPO/runs/grpo/tb   /root/tf
 | 面板一直「等待日志」 | 目录挂错了 | `ls -l /root/tf-logs/`，应能看到 `sft -> .../runs/sft/tb` |
 | 目录空的 | 没加 `--tensorboard`，或还没跑满 1 步 | 加了重跑；`logging_steps=1`，第 1 步就有数据 |
 | 页面能开但没曲线 | AutoPanel 缓存了旧的空目录 | 面板里点重启 TensorBoard，或换个子目录名 |
+| 报 `TypeError: SFTConfig.__init__() got an unexpected keyword argument 'logging_dir'` | 云端还是旧脚本 | 同步代码（`git pull`，或 `scp` 覆盖本章 `code/` 下的 `common.py` / `*_trainer.py` / `train_*.py`）；新版是在构造完 config 之后才赋值 `args.logging_dir`，不再当构造参数传 |
 
 两种看法不冲突：`--tensorboard` 给浏览器看交互曲线，`--plot-every 20` 顺手写一张 `loss.svg` 快照
 （断线、离线、发群里都方便）。只想留一个就 `--plot-every 0` 或去掉 `--tensorboard`。

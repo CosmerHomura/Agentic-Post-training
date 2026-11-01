@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import time
 
@@ -114,9 +115,14 @@ def train(rows, model_name: str, epochs: float, max_steps: int, num_gen: int,
         save_strategy="no",
         remove_unused_columns=False,      # reward 要用数据集里的 ground_truth 列
         report_to=["tensorboard"] if tb else [],
-        logging_dir=str(RUN_DIR / "tb"),
         run_name=RUN_DIR.name,
     )
+    # TRL 1.16 的 *Config.__init__ 是显式参数列表，没有 logging_dir 这个入参，
+    # 只能构造完再赋值（TensorBoardCallback 是创建 Trainer 时才读它的）。
+    args.logging_dir = str(RUN_DIR / "tb")
+    if tb and importlib.util.find_spec("tensorboard") is None:
+        print('  ⚠ 没装 tensorboard，日志写不进去：pip install -i https://pypi.tuna.tsinghua.edu.cn/simple tensorboard')
+
     trainer = GRPOTrainer(
         model=model_name,
         reward_funcs=[format_reward, accuracy_reward],

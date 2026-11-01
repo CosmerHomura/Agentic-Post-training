@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import time
 
@@ -108,9 +109,14 @@ def train(rows, student_name, teacher_name, epochs: float, max_steps: int | None
         logging_steps=1,
         save_strategy="no",
         report_to=["tensorboard"] if tb else [],
-        logging_dir=str(RUN_DIR / "tb"),
         run_name=RUN_DIR.name,
     )
+    # TRL 1.16 的 *Config.__init__ 是显式参数列表，没有 logging_dir 这个入参，
+    # 只能构造完再赋值（TensorBoardCallback 是创建 Trainer 时才读它的）。
+    args.logging_dir = str(RUN_DIR / "tb")
+    if tb and importlib.util.find_spec("tensorboard") is None:
+        print('  ⚠ 没装 tensorboard，日志写不进去：pip install -i https://pypi.tuna.tsinghua.edu.cn/simple tensorboard')
+
     trainer = DistillationTrainer(
         model=student_name,
         teacher_model=teacher_name,
