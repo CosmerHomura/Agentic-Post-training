@@ -421,7 +421,40 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ---
 
-## 7. 参数速查
+## 7. 默认参数一览
+
+### 7.1 命令行开关
+
+| 开关 | 默认 | 作用 | 常见改法 |
+|---|---|---|---|
+| `--model` | `Qwen/Qwen2.5-0.5B-Instruct` | 学生（被训） | 换成你要蒸馏的小模型 |
+| `--teacher` | `Qwen/Qwen2.5-1.5B-Instruct` | 教师（只前向） | 3B / 7B，**词表要一致**（见 7.4） |
+| `--beta` | **0.5**（JSD） | 用哪种散度 | 0=前向 KL，1=反向 KL |
+| `--temperature` | **1.0** | 同时作用于生成与损失 | 1.5–2.0（更软的分布、更抖） |
+| `--gen-tokens` | **160** | 学生生成 / 对比的长度上限 | 512（长答案） |
+| `--epochs` | **2** | 训练轮数 | 1（快）／3（小数据） |
+| `--max-steps` | **0**（不覆盖） | 固定步数替代 epochs | 20（快速验证） |
+| `--limit` | **2000** | 从官方数据集取前 N 条 prompt | 100／5000 |
+| `--eval-size` | **100** | held-out 条数（测平均 KL） | 200 |
+| `--dataset` / `--data` / `--split` | 无 / `data/distill_prompts.jsonl` / `train` | 数据来源 | `trl-lib/ultrafeedback-prompt` |
+| `--tensorboard` | 关 | 日志写 `<章节>/runs/distill/tb` | 想边训边看 |
+| `--plot-every` | **20** | 每 N 步重画 `loss.svg` | 0／5 |
+| `--inspect` / `--explain-loss` / `--no-eval` | 关 | 只跑链路 / 手算 KL / 跳过前后对比 | 调试用 |
+
+### 7.2 训练超参（`distill_trainer.py`）
+
+| 参数 | 值 | 说明 | 想改的话 |
+|---|---|---|---|
+| `per_device_train_batch_size` | **2** | 学生前向 + 教师前向，一条 prompt 生成两条 | 教师换 7B 时降到 1 |
+| `gradient_accumulation_steps` | **8** | 全局 batch = 2×8×卡数 = **16 条** | 想更稳加到 16 |
+| `learning_rate` | **1e-6** | 蒸馏比 SFT 小一个量级（分布匹配比硬标签更敏感） | 2e-6 上限；再大容易发散 |
+| `max_completion_length` | `gen_tokens`（默认 **160**） | 学生每条生成上限 | 多轮 agent 要调大 |
+| `beta` / `temperature` | **0.5** / **1.0** | 与命令行同源，训练器再传一次 | 见 7.1 |
+| `use_vllm` | **False** | 用 vLLM 生成学生 rollout | 规模上来后开（`vllm_mode="colocate"`） |
+| `logging_steps` | **10**（DistillationConfig 默认） | 本脚本改成了每步打印 | 保持 1 便于看趋势 |
+| `gradient_checkpointing` | **True** | 教师+学生双份激活，必须开 | 别关，会 OOM |
+
+### 7.3 训练器参数（DistillationConfig 视角）
 
 | 参数 | 作用 | 默认 | 建议 |
 |---|---|---|---|
@@ -433,7 +466,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | `max_tool_calling_iterations` | 允许的最多工具轮数 | — | 多轮 agent 时设 |
 | `remove_unused_columns` | 是否删掉数据集多余列 | `False` | 蒸馏里保持 `False` |
 
-### 教师模型怎么选（谁来教）
+### 7.4 教师模型怎么选（谁来教）
 
 本教程的默认配置写在 `02-蒸馏/code/common.py:23-24`：
 

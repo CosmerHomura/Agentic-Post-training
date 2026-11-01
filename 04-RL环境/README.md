@@ -237,6 +237,23 @@ trainer = GRPOTrainer(
 - 环境类：[`code/env_factory.py`](code/env_factory.py)（`IncrementEnv` 最小示例 + `CodingEnv` 编程环境）
 - 训练脚本：[`code/train_grpo_env.py`](code/train_grpo_env.py)
 
+### 9.1 默认参数（`train_grpo_env.py` 里写死的）
+
+| 参数 | 值 | 说明 | 想改的话 |
+|---|---|---|---|
+| `environment_factory` | `CodingEnv` | 每个 rollout 新建一个环境实例 | 换成你的环境类 |
+| `num_generations` | **8** | 每个 prompt 采 8 条 episode | 4（省显存）／16 |
+| `max_completion_length` | **4096** | ★ **整个 episode** 的 token 预算，不是单轮 | 8192（几十轮的 agent） |
+| `max_tool_calling_iterations` | **20** | 最多几轮工具调用 | 50（长任务）；设太小会强制截断 |
+| `temperature` | **1.0** | 采样温度 | 0.7（更稳但少探索） |
+| `per_device_train_batch_size` | **4** | 环境 rollout 显存开销大，比纯 GRPO 小 | 显存够可 8 |
+| `gradient_accumulation_steps` | **2** | 全局 = 4×2×卡数 | 4 |
+| `num_train_epochs` | **1** | episode 很贵，先跑一轮看趋势 | 2 |
+| `learning_rate` | **1e-6** | 与第 3 章一致 | 5e-7 |
+| `beta` / `loss_type` / `scale_rewards` | **0.0** / `"dapo"` / `"group"` | 同第 3 章 | 见第 3 章 8.2 |
+| `log_completions` | **True** | 把完整 episode 打进日志（调环境必备） | 生产可关（日志会很长） |
+| `output_dir` | `./04-RL环境/ckpt/grpo-coding-env` | 产物位置 | 一般不动 |
+
 ```python
 args = GRPOConfig(
     output_dir="./04-RL环境/ckpt/grpo-coding-env",

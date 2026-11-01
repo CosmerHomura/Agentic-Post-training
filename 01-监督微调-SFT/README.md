@@ -702,7 +702,50 @@ prompt：`Determine the result obtained by evaluating 5338245-50629795848152. Nu
 
 ---
 
-## 8. 参数速查
+## 8. 默认参数一览
+
+改之前先看清它现在是几。下面两张表就是脚本的真实默认值（`train_sft.py` 的 argparse + `sft_trainer.py` 的 `SFTConfig`）。
+
+### 8.1 命令行开关（`--help` 里的全部）
+
+| 开关 | 默认 | 作用 | 常见改法 |
+|---|---|---|---|
+| `--data` | `data/sft_agent_trace.jsonl` | 本地 jsonl 轨迹（相对本章目录） | 换成自己采集的 |
+| `--dataset` | 无 | 官方数据集名，**优先于** `--data` | `trl-lib/Capybara` |
+| `--split` | `train` | 数据集切分 | 一般不用改 |
+| `--limit` | **2000** | 从官方数据集取前 N 条 | 100（快速验证）／5000（24G 稳）／20000 |
+| `--eval-size` | **100** | 留多少条做 held-out | 200（曲线更稳，每次评估慢一倍） |
+| `--model` | `Qwen/Qwen3-0.6B` | 被训模型 | `Qwen/Qwen3-1.7B` |
+| `--epochs` | **3** | 训练轮数（可小数） | 1（只看趋势）／5（小数据） |
+| `--max-steps` | 无 | 覆盖 epochs，跑固定步数 | 20（快速验证） |
+| `--gen-tokens` | **220** | 前后对比的生成上限 | 512（想看完整答案） |
+| `--eval-steps` | **0** = 每 epoch 一次 | 训练中每 N 步评估 | 50（要密一点的 `eval/loss`） |
+| `--plot-every` | **20** | 每 N 步重画 `loss.svg` | 0（不画）／5（看细节） |
+| `--tensorboard` | 关 | 日志写到 `<章节>/runs/sft/tb` | 想边训边看就加 |
+| `--fp32` | 关（默认 bf16） | 不用 bf16 | 老卡不支持 bf16 时 |
+| `--no-eval` | 关 | 跳过训练前后生成对比 | 只想快点跑完 |
+| `--inspect` | 关 | 只跑数据链路，不训练、可无 GPU | 先验证数据对不对 |
+| `--explain-loss` | 关 | 玩具数字手算交叉熵 | 学第 6 节时跑 |
+
+### 8.2 训练超参（写在 `sft_trainer.py` 里，目前不能从命令行改）
+
+| 参数 | 值 | 为什么是这个值 | 想改的话 |
+|---|---|---|---|
+| `per_device_train_batch_size` | **1** | 一条 4096 序列就差不多占满 | 1.7B 时可试 2（24G 临界） |
+| `gradient_accumulation_steps` | **8** | 1×8 = 全局 batch **8 条** | 加到 16 相当于再降一半 lr 需求 |
+| 全局 batch | **8 条 ≈ 7.6k token** | 714 步 = ⌈1900/8⌉ × 3 的来源 | 见上 |
+| `learning_rate` | **2e-5** | 0.5B~1B 全参微调的常用值 | 1e-5（更稳）／5e-5（更快但易崩） |
+| `warmup_steps` | **3** | 冷启动防第一步炸（你看到的 grad 16 就是它） | 20–50（数据量大时） |
+| `lr_scheduler_type` | `cosine` | 末段自动降到接近 0（实测 2e-5 → 1.4e-8） | 想长训换 `linear` |
+| `max_length` | **4096** | 覆盖绝大多数 agent 轨迹 | 8192（长轨迹，显存约翻倍） |
+| `assistant_only_loss` | **True** | 只学助手说的话 | 关掉会把工具返回也学进去 |
+| `packing` | **False** | 保证「一条轨迹 = 一条序列」好对照 | True 提速 10–30% |
+| `bf16` | 自动（有卡即开） | 省一半显存 | `--fp32` 关掉 |
+| `gradient_checkpointing` | **True** | 用时间换显存 | 关掉快约 20%，显存 +30% |
+| `save_strategy` | `no` | 只在结束时存最终权重 | 想断点续训改 `epoch` |
+| `optim` | `adamw_torch_fused`（CPU 退 `adamw_torch`） | 有卡时最快 | 一般不用动 |
+
+### 8.3 训练器层面还能开的开关
 
 | 参数 | 作用 | 建议 |
 |---|---|---|

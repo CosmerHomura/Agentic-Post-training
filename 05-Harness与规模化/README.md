@@ -49,8 +49,6 @@ GPU-1 (trainer):      [训练步1][训练步2][训练步3][训练步4][训练步
 
 ## 4. 完整架构
 
-## 4. 完整架构
-
 ```
 GPU-1 · 训练侧
   AsyncGRPOTrainer
@@ -159,6 +157,23 @@ mask:       0    0    1    0    1
 ---
 
 ## 8. 代码与命令
+
+### 8.0 默认参数（`train_async_grpo.py` 里写死的）
+
+| 参数 | 值 | 说明 | 想改的话 |
+|---|---|---|---|
+| `model` | `Qwen/Qwen3-4B` | 被训模型（要放得下 trainer 那张卡） | 0.6B（单卡也能玩） |
+| `vllm_server_url` | `localhost:8000` | 生成服务的地址 | 换端口/主机要同步改 |
+| `max_staleness` | **2** | 一条样本最多落后几次权重更新 | 1（更 on-policy，吞吐低）／3（更快更旧） |
+| `max_inflight_tasks` | 默认 = `max_staleness × bs × ga × 进程数` | 同时在飞的 rollout 数 | 显存/内存够可调大 |
+| `weight_sync_steps` | **8** | 每 N 步把权重推回 vLLM | 4（更同步）／16（更省带宽） |
+| `num_generations` | **8** | 每个 prompt 采几条 | 4／16 |
+| `max_completion_length` | **2048** | 单条 completion 上限 | agent 长轨迹要 8192+ |
+| `per_device_train_batch_size` | **4** | trainer 侧的 batch | 2（显存紧） |
+| `gradient_accumulation_steps` | **2** | 全局 = 4×2×卡数 | 4 |
+| `learning_rate` | **1e-6** | 与第 3、4 章一致 | 5e-7 |
+| `ignore_data_skip` | **True** | 断点续训跳过已训样本（异步默认行为） | 一般不动 |
+
 
 - 异步训练：[`code/train_async_grpo.py`](code/train_async_grpo.py)
 - 黑盒 harness：[`code/harbor_rollout.py`](code/harbor_rollout.py)

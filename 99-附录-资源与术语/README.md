@@ -284,6 +284,23 @@
 | 核心指标 | `mean_token_accuracy` | `completions/clipped_ratio` | `reward`/`reward_std` | `tools/call_frequency` | `reward` + 墙钟时间 |
 | 最小卡数 | 1 | 1（学生+教师） | 1 | 1 | 2 |
 
+### D.2 五步默认超参对照（脚本里写死的值）
+
+| | ① SFT | ② 蒸馏 | ③ GRPO | ④ 环境 | ⑤ 异步 |
+|---|---|---|---|---|---|
+| 模型 | `Qwen3-0.6B` | 学生 `Qwen2.5-0.5B` / 教师 `1.5B` | `Qwen2.5-0.5B` | 同 ③ | `Qwen3-4B` |
+| 数据量 | 2000（训 1900 / 验 100） | 2000 / 100 | 2000 / 100 | 示例 2 条任务 | 示例数据集 |
+| epochs | 3 | 2 | 2 | 1 | — |
+| per-device batch | 1 | 2 | = G = 8 | 4 | 4 |
+| 梯度累积 | 8 | 8 | 2 | 2 | 2 |
+| 全局 batch | **8 条** | **16 条** | **16 条（=2 prompt×8）** | 8 条 | 8 条 |
+| lr | **2e-5** | **1e-6** | **1e-6** | 1e-6 | 1e-6 |
+| 关键长度参数 | `max_length=4096` | `max_completion_length=160` | `max_completion_length=256` | `max_completion_length=4096`（整 episode） | 2048 |
+| 特有开关 | `assistant_only_loss=True` | `beta=0.5`、`temperature=1.0` | `num_generations=8`、`beta=0.0` | `max_tool_calling_iterations=20` | `max_staleness=2`、`weight_sync_steps=8` |
+| 实测耗时 | 714 步 / 17 分钟（0.6B，单卡） | 待回填 | 待回填 | — | — |
+
+> 逐项说明与「调大会怎样」在各章末尾：01 章 §8、02 章 §7、03 章 §8、04 章 §9、05 章 §8.0。
+
 ---
 
 ## 附录 E · FAQ

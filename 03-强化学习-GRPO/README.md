@@ -319,6 +319,37 @@ r_{i,t} = \frac{\pi_\theta\left(a_{i,t} \mid s_{i,t}\right)}{\pi_{\text{old}}\le
 
 `code/train_grpo.py` 的六个阶段：读数据 → 模板 → 采样打分 → 算优势 → 训练 → 前后对比。
 
+### 8.1 命令行开关
+
+| 开关 | 默认 | 作用 | 常见改法 |
+|---|---|---|---|
+| `--model` | `Qwen/Qwen2.5-0.5B-Instruct` | 被训模型 | 1.5B / 3B（显存跟着涨） |
+| `--num-generations` | **8** | G：每个 prompt 采几条 | 4（省显存）／16（优势更稳但慢一倍） |
+| `--temperature` | **1.0** | 采样温度 | 太低 → 组内几乎一样、std≈0 学不动 |
+| `--max-new` | **256** | 单条 completion 的 token 上限 | 512（要长推理） |
+| `--epochs` | **2** | 训练轮数 | 1 |
+| `--max-steps` | **0**（不覆盖） | 固定步数 | 20（快速验证） |
+| `--limit` | **2000** | prompt 条数 | 500（快）／10000 |
+| `--eval-size` | **100** | held-out（算 pass@1） | 200 |
+| `--dataset` / `--data` / `--split` | 无 / `data/grpo_prompts.jsonl` / `train` | 数据来源 | `trl-lib/DeepMath-103K` |
+| `--tensorboard` | 关 | 日志写 `<章节>/runs/grpo/tb` | 想边训边看 |
+| `--plot-every` | **20** | 每 N 步重画 `loss.svg`（双曲线） | 0／5 |
+| `--inspect` / `--explain-loss` | 关 | 只跑链路 / 手算优势与 clip | 调试用 |
+
+### 8.2 训练超参（`grpo_trainer.py`）
+
+| 参数 | 值 | 说明 | 想改的话 |
+|---|---|---|---|
+| `num_generations` | **8** | 必须整除「有效 batch」 | 4 / 16 |
+| `per_device_train_batch_size` | **= num_gen（8）** | 一次正好装一个 prompt 的 8 条 | 显存不够就把 G 降到 4 |
+| `gradient_accumulation_steps` | **2** | 全局 = 8×2×卡数 = **16 条 = 2 个 prompt** | 加到 4 → 4 个 prompt |
+| `learning_rate` | **1e-6** | RL 比 SFT 更敏感 | 5e-7（稳）／2e-6（激进） |
+| `beta` | **0.0** | 0 = 不挂参考模型 KL（省一份显存） | 0.01–0.04 可抑制跑偏 |
+| `loss_type` | `"dapo"` | TRL 1.16 默认；还有 `"grpo"`/`"bnpo"` | 一般不用改 |
+| `scale_rewards` | `"group"` | 组内归一化 = A_i 公式 | `"batch"` 则跨 prompt 归一化 |
+| `max_completion_length` | `--max-new`（**256**） | 单条上限，超了截断 | 512 |
+| `remove_unused_columns` | **False** | 奖励函数要读 `ground_truth` 列 | 别改 |
+
 ```python
 args = GRPOConfig(
     num_generations=8,          # ★ G：每个 prompt 采几条（要能整除有效 batch）
