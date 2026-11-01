@@ -20,6 +20,7 @@ Hugging Face 那篇课程页是一张"**学习地图**"：它把 agent 后训练
 | 每一步的**数据格式**（JSONL 逐字段） | 各章 `data/` 示例文件 + README 表格 |
 | 每一步的**模型输入输出**（token / mask 视角） | 各章 README 的「输入输出」小节 |
 | 可运行代码骨架（改路径就能跑） | 各章 `code/` 目录 |
+| **公式逐项拆解器**（点开一层层往下钻） | 第 1、2、3 章的损失小节 + 第 6 章全部公式 |
 | 训练成败的判断依据（看哪些指标） | 各章 README 的「产物与验收」小节 |
 | 目录导航、学习路线、资源总表 | 本文件 |
 
@@ -102,21 +103,24 @@ Agentic Post-training/
 ├── 01-监督微调-SFT/
 │   ├── README.md                   译文 + 格式 + 输入输出 + 损失手算 + 代码 + 踩坑
 │   ├── data/sft_agent_trace.jsonl  解剖样本（2 条完整轨迹，训练请用 trl-lib/Capybara）
-│   └── code/train_sft.py           四阶段打印 + 训练 + 前后评测
+│   └── code/                       7 个模块：train_sft.py 入口 + common/sft_data/
+│                                   sft_template/sft_trainer/sft_report/sft_loss
 ├── 02-蒸馏/
 │   ├── README.md
 │   ├── data/distill_prompts.jsonl  解剖样本（3 条 prompt，训练请用 trl-lib/ultrafeedback-prompt）
-│   └── code/train_distill.py       分布对比 + KL 手算 + 训练 + 前后 KL 评测
+│   └── code/                       8 个模块：train_distill.py 入口 + distill_*.py
 ├── 03-强化学习-GRPO/
 │   ├── README.md
 │   ├── data/grpo_prompts.jsonl     解剖样本（3 道题，训练请用 trl-lib/DeepMath-103K）
-│   └── code/train_grpo.py          采样打分 + 优势计算 + 损失手算 + 训练 + pass@1 评测
+│   └── code/                       8 个模块：train_grpo.py 入口 + grpo_*.py
 ├── 04-RL环境/
 │   ├── README.md
 │   └── code/{env_factory.py, train_grpo_env.py}
 ├── 05-Harness与规模化/
 │   ├── README.md
 │   └── code/{train_async_grpo.py, harbor_rollout.py}
+├── 06-理论串联-从熵到GRPO/
+│   └── README.md                   熵 / 交叉熵 / KL / JS 与贝尔曼 / 策略梯度 / GAE / PPO / GRPO 的一条线
 └── 99-附录-资源与术语/
     └── README.md                   术语表、原文全部链接、常见问题
 ```
@@ -131,13 +135,14 @@ Agentic Post-training/
 | 3 | [强化学习 GRPO](03-强化学习-GRPO/README.md) | 只有一个分数时，梯度怎么算？奖励函数怎么写？ | 75 min |
 | 4 | [RL 环境](04-RL环境/README.md) | 多轮交互、工具、状态，怎么接进 trainer？ | 60 min |
 | 5 | [Harness 与规模化](05-Harness与规模化/README.md) | 真实 agent 自己掌控循环时，怎么训练？怎么并行？ | 60 min |
+| 6 | [理论串联](06-理论串联-从熵到GRPO/README.md) | 这些损失函数各自从哪来？为什么 SFT 用交叉熵、GRPO 用策略梯度？ | 70 min |
 | 附 | [资源与术语](99-附录-资源与术语/README.md) | 原文全部链接、名词对照、FAQ | 随时查 |
 
 ### 三条学习路线
 
 - **速通（半天）**：读本文件 → 每章只读「原文译文」+「输入输出」两张表 → 跳过代码。
 - **动手（一周）**：按 1→2→3→4→5 顺序，每章跑一遍 `code/` 里的脚本（用小模型 `Qwen3-0.6B`）。
-- **深挖（两周）**：每章读完官方文档链接 → 把你自己的任务改造成对应格式 → 对比五步在同一任务上的效果。
+- **深挖（两周）**：先读 [第 6 章](06-理论串联-从熵到GRPO/README.md) 把损失函数的来路串起来 → 每章读完官方文档链接 → 把你自己的任务改造成对应格式 → 对比五步在同一任务上的效果。
 
 ---
 
@@ -175,7 +180,7 @@ pip install trl[vllm]           # 用 vLLM 加速生成
 #   - 黑盒 harness 还需要 OpenEnv Harbor server + 沙箱凭证（如 E2B_API_KEY）
 ```
 
-硬件参考：`0.5B–0.6B` 模型单卡 16GB 可跑 SFT / 蒸馏 / GRPO 小规模实验；`4B` 以上建议 A100 级别；第 5 步按文档说明需要把 vLLM 与训练分卡。
+硬件参考：`0.5B–0.6B` 模型单卡 16GB 可跑 SFT / 蒸馏 / GRPO小规模实验；`4B` 以上建议 A100 级别；第 5 步按文档说明需要把 vLLM 与训练分卡。
 
 ---
 
@@ -229,7 +234,6 @@ pip install trl[vllm]           # 用 vLLM 加速生成
 - **代码部分**（各章 `code/*.py`、`_site/` 构建脚本）按 [MIT](LICENSE) 授权。
 - 欢迎 issue / PR 纠错。发现译错的段落，直接改对应 `README.md`，然后 `python _site\build.py` 重新生成网页再提交。
 
-> 别人照这份仓库学，最好的引用方式是给个链接：`https://github.com/CosmerHomura/Agentic-Post-training`。
 
 ---
 

@@ -234,6 +234,41 @@
 | sandbox | 沙箱 | 隔离的执行环境（容器 / 远程 VM） | 第 5 章 |
 | Harbor | Harbor | OpenEnv 里负责起沙箱、跑 harness、抓 trace 的服务 | 第 5 章 |
 
+#> 网页版里这些缩写带**虚线下划线**，鼠标悬停即可看到全称与中文；
+> 读 markdown 时直接查下面这张表。
+
+### C.1 英文缩写对照（全称 + 中文）
+
+正文里第一次出现时都带了全称，这里再集中列一遍，方便回头查。
+
+> 三处故意保持缩写：**代码块**里（写全称跑不起来）、**表格单元格**里（长括号会把列撑爆）、**示意图**里（宽度固定）。这三种地方看到不认识的缩写，回这张表查即可。
+
+| 缩写 | 全称 | 中文 | 详讲章节 |
+|---|---|---|---|
+| SFT | Supervised Fine-Tuning | 监督微调 | 第 1 章 |
+| RL | Reinforcement Learning | 强化学习 | 第 3 章 |
+| GRPO | Group Relative Policy Optimization | 组相对策略优化 | 第 3 章 |
+| PPO | Proximal Policy Optimization | 近端策略优化 | 第 3 章 |
+| GKD | Generalized Knowledge Distillation | 广义知识蒸馏 | 第 2 章 |
+| KL | Kullback-Leibler divergence | KL 散度 | 第 2 章 |
+| JSD | Jensen-Shannon Divergence | JSD 散度 | 第 2 章 |
+| LLM | Large Language Model | 大语言模型 | 第 0 章 |
+| LoRA | Low-Rank Adaptation | 低秩适配 | 第 1 章 |
+| QLoRA | Quantized LoRA | 量化低秩适配 | 第 0 章 |
+| TRL | Transformer Reinforcement Learning | Hugging Face 的后训练库 | 全篇 |
+| NCCL | NVIDIA Collective Communications Library | NVIDIA 集合通信库 | 第 5 章 |
+| CUDA | Compute Unified Device Architecture | 英伟达 GPU 计算平台 | 第 0 章（cloud-setup） |
+| GPU | Graphics Processing Unit | 图形处理器 | 全篇 |
+| CPU | Central Processing Unit | 中央处理器 | 第 0 章 |
+| EOS | End Of Sequence | 序列结束符 | 第 1 章 |
+| JSON | JavaScript Object Notation | JS 对象表示法 | 第 1 章 |
+| JSONL | JSON Lines | 按行存放 JSON 的文本格式 | 第 0 章 |
+| API | Application Programming Interface | 应用程序接口 | 第 4 章 |
+| HTTP | HyperText Transfer Protocol | 超文本传输协议 | 第 5 章 |
+| HTTPS | HyperText Transfer Protocol Secure | 加密的 HTTP | 第 0 章 |
+
+> 两个不是缩写的专名：**vLLM**（一个高吞吐推理引擎，第 5 章用它跑生成）、**Harbor**（OpenEnv 的沙箱编排服务）。
+
 ---
 
 ## 附录 D · 五步速查表

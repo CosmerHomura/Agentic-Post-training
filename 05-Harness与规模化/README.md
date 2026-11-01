@@ -6,7 +6,7 @@
 
 ## 1. 一句话定义
 
-**别自己写 agent 循环了——让真实 agent（mini-swe-agent / opencode / claude-code）在远程沙箱里跑，训练它。同时把"生成"和"训练"拆到两块 GPU 上并行，让 trainer 不再空转。**
+**别自己写 agent 循环了——让真实 agent（mini-swe-agent / opencode / claude-code）在远程沙箱里跑，训练它。同时把"生成"和"训练"拆到两块 GPU上并行，让 trainer 不再空转。**
 
 这一步同时解决两件事：**真实性**（在它将来要跑的同一个壳里训练）和**速度**（长 episode 不再阻塞训练）。
 
@@ -72,7 +72,7 @@ GPU-0 · vLLM server                 Harbor（远程沙箱编排）
                                     · 抓 TrainingTrace 回传
 ```
 
-三条链路各自的作用：**队列**解决"快慢不匹配"，**NCCL 权重同步**解决"vLLM 里是旧权重"，**HTTP + Harbor** 解决"episode 在哪跑"。
+三条链路各自的作用：**队列**解决"快慢不匹配"，**NCCL权重同步**解决"vLLM 里是旧权重"，**HTTP + Harbor** 解决"episode 在哪跑"。
 
 ### 关键设计：**同一个模型，两个身份**
 
@@ -95,7 +95,7 @@ trace.loss_mask            = [0, 0, 1, 0, 1]       ← 与 prompt+completion 等
 ```
 位置:        0    1    2    3    4
 token:      10   11   20   21   22
-来源:     prompt prompt 模型 模型 模型
+来源:     prompt prompt 模型模型模型
 mask:       0    0    1    0    1
 是否学:      ✗    ✗    ✓    ✗    ✓
 ```
@@ -177,8 +177,8 @@ vllm serve Qwen/Qwen3-4B \
   --return-tokens-as-token-ids \
   --weight-transfer-config '{"backend":"nccl"}'
 
-# (3) 训练
-CUDA_VISIBLE_DEVICES=1 accelerate launch train_async_grpo.py
+# (3) 训练（在仓库根目录执行，脚本路径带章节名）
+CUDA_VISIBLE_DEVICES=1 accelerate launch 05-Harness与规模化/code/train_async_grpo.py
 ```
 
 ### 8.2 训练脚本骨架
@@ -290,7 +290,7 @@ worker = HarnessRolloutWorker(
 
 ## 11. 练习与自测
 
-1. **异步 vs 同步**：同一任务跑 200 步同步 GRPO 与异步 GRPO，比较墙钟时间与最终奖励。算一下"理论加速比 = 生成时间/训练时间"。
+1. **异步 vs 同步**：同一任务跑 200 步同步 GRPO与异步 GRPO，比较墙钟时间与最终奖励。算一下"理论加速比 = 生成时间/训练时间"。
 2. **staleness 实验**：`max_staleness` 取 1 / 4 / 8，观察 `reward` 曲线。你会看到"省时间"与"学得准"的权衡。
 3. **换 harness**：把 `harness="mini-swe-agent"` 换成 `"opencode"`，同一份权重直接跑，观察行为差异——这直观说明"壳"对模型表现的影响有多大。
 

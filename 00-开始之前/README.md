@@ -55,7 +55,7 @@ environment（环境）：决定"做了会怎样"
 ```
 
 一句话：**harness 是"大脑的外壳"，environment 是"身体所在的世界"**。
-在 TRL 里：`environment_factory` 给你 environment；`HarnessRolloutWorker` 给你 harness。
+在 TRL里：`environment_factory` 给你 environment；`HarnessRolloutWorker` 给你 harness。
 
 ---
 
@@ -118,7 +118,7 @@ pip install openenv-core           # 第 4 步：环境
 ```
 
 > 版本提示：第 4 步的 `environment_factory` 要求 `transformers>=5.2.0`；
-> 第 5 步的异步 rollout 走 NCCL 权重同步，vLLM 版本别太旧。
+> 第 5 步的异步 rollout 走 NCCL权重同步，vLLM 版本别太旧。
 
 ### 6.2 硬件
 
@@ -173,7 +173,7 @@ python -c "import torch; print(torch.cuda.device_count(), torch.cuda.get_device_
 ## 8. 怎么用这份教程
 
 1. **先读本文件**（你正在读），把六个词记住。
-2. 进入第 1 章，**先看「输入格式」那张表和 JSONL 示例**——那是你实际要准备的东西。
+2. 进入第 1 章，**先看「输入格式」那张表和 JSONL示例**——那是你实际要准备的东西。
 3. 再看「输入输出」小节，理解 `labels` 里的 `-100` 是怎么来的。
 4. 跑 `code/` 里的脚本，盯「产物与验收」里列的指标。
 5. 每章最后的「练习」做完再进下一章。

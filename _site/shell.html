@@ -239,6 +239,47 @@ body.nav-open #burger{position:relative;z-index:57}
   .sec{box-shadow:none;break-inside:avoid;border-color:#ddd}
   body{background:#fff}
 }
+
+/* ---- 公式 ---- */
+.math{margin:18px 0;padding:8px 2px;overflow-x:auto;font-size:1.2em;text-align:center}
+.math math[display="block"]{margin:0 auto}
+.imath{white-space:nowrap;font-size:1.04em}
+.katex{font-size:1em;line-height:1.35}
+.math .katex{font-size:1.16em}
+td .katex,th .katex{font-size:1.02em}
+.math::-webkit-scrollbar{height:6px}
+
+/* ---- 缩写悬浮提示 ---- */
+details.fold{margin:14px 0;border:1px solid var(--line);border-radius:12px;background:var(--paper);overflow:hidden}
+details.fold>summary{cursor:pointer;padding:10px 14px;font-weight:600;font-size:14px;color:var(--ink);list-style:none;background:var(--paper2)}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary::before{content:"▸ ";color:var(--muted)}
+details.fold[open]>summary::before{content:"▾ "}
+details.fold[open]>summary{border-bottom:1px solid var(--line)}
+details.fold .foldbody{padding:6px 16px 12px}
+abbr[title]{text-decoration:none;border-bottom:1px dotted var(--muted);cursor:help}
+abbr[title]:hover{border-bottom-color:var(--ink);color:var(--ink)}
+
+/* ── 公式拆解器 ───────────────────────────── */
+.fxl{margin:20px 0;padding:16px 18px 14px;border:1px solid var(--line);border-radius:12px;background:var(--paper);box-shadow:var(--shadow)}
+.fx-title{font-weight:700;font-size:14px;color:var(--ink);margin-bottom:8px}
+.fx-root{margin:2px 0 0}
+.fx-hint{margin:10px 0 0;font-size:12px;color:var(--muted)}
+.fx-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.fx-chip{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border:1px solid var(--line);border-radius:999px;background:var(--bg);color:var(--ink);cursor:pointer;font-size:13px;line-height:1.2;transition:border-color .15s,color .15s,background .15s}
+.fx-chip:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.fx-chip.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.fx-chip-math{font-size:13px}
+.fx-chip-name{white-space:nowrap}
+.fx-chip-more{font-size:10px;color:var(--muted)}
+.fx-back{border:none;background:none;color:var(--accent);cursor:pointer;font-size:12.5px;padding:6px 4px}
+.fx-panel{display:none;margin-top:14px;padding:13px 16px 14px;border-left:3px solid var(--accent);background:var(--bg);border-radius:0 10px 10px 0}
+.fx-panel.open{display:block}
+.fx-crumb{font-size:12px;color:var(--muted);margin-bottom:8px;word-break:break-word}
+.fx-node{margin-bottom:2px}
+.fx-node-math{font-size:1.15em}
+.fx-def{margin:10px 0 8px;font-size:1.02em}
+.fx-note{margin:0;font-size:14px;color:var(--ink)}
 </style>
 </head>
 <body>
@@ -553,6 +594,133 @@ $('#theme').textContent = theme === 'dark' ? '浅色模式' : '深色模式';
 if (!location.hash) history.replaceState(null, '', '#/' + (chapterById(last).id));
 drawToc();
 paint(true);
+</script>
+<script>/*__KATEX__*/</script>
+<script>
+(function(){
+  function renderAll(){
+    if (typeof katex === "undefined") return;
+    document.querySelectorAll("[data-tex]").forEach(function(el){
+      if (el.dataset.rendered) return;
+      try {
+        katex.render(el.dataset.tex, el, {
+          displayMode: el.classList.contains("math"),
+          output: "mathml",
+          throwOnError: false,
+          strict: false
+        });
+        el.dataset.rendered = "1";
+      } catch (e) { el.textContent = el.dataset.tex; }
+    });
+  }
+  renderAll();
+  window.renderMath = renderAll;
+})();
+</script>
+
+<script>
+(function(){
+  function fxInit(){
+    if (typeof katex === "undefined") return;
+    document.querySelectorAll(".fxl").forEach(function(box){
+      if (box.dataset.fxb) return;
+      box.dataset.fxb = "1";
+      var spec;
+      try { spec = JSON.parse(box.dataset.fx); } catch (e) { return; }
+
+      var hint = box.querySelector(".fx-hint");
+      var chips = document.createElement("div"); chips.className = "fx-chips";
+      var panel = document.createElement("div"); panel.className = "fx-panel";
+      box.appendChild(chips); box.appendChild(panel);
+      var stack = [];
+
+      function m(tex, cls){
+        var s = document.createElement("span");
+        s.className = cls; s.dataset.tex = tex;
+        return s;
+      }
+
+      function paint(kids){
+        chips.innerHTML = "";
+        if (stack.length){
+          var back = document.createElement("button");
+          back.type = "button"; back.className = "fx-back";
+          back.textContent = "← 返回上一层";
+          back.onclick = function(){
+            stack.pop();
+            var top = stack[stack.length-1];
+            if (top){ select(top, false); } else { reset(); }
+          };
+          chips.appendChild(back);
+        }
+        (kids || []).forEach(function(k){
+          var b = document.createElement("button");
+          b.type = "button"; b.className = "fx-chip";
+          b.appendChild(m(k.label, "fx-chip-math"));
+          if (k.name){
+            var nm = document.createElement("span");
+            nm.className = "fx-chip-name"; nm.textContent = k.name;
+            b.appendChild(nm);
+          }
+          if (k.kids && k.kids.length){
+            var more = document.createElement("span");
+            more.className = "fx-chip-more"; more.textContent = "▸";
+            b.appendChild(more);
+          }
+          b.onclick = function(){ select(k, true); };
+          chips.appendChild(b);
+        });
+        if (window.renderMath) window.renderMath();
+      }
+
+      function select(k, push){
+        if (push) stack.push(k);
+        panel.innerHTML = "";
+        var crumb = document.createElement("div");
+        crumb.className = "fx-crumb";
+        crumb.textContent = ["目标函数"].concat(stack.map(function(x){ return x.name || x.label; })).join("  ›  ");
+        panel.appendChild(crumb);
+
+        var node = document.createElement("div");
+        node.className = "fx-node";
+        node.appendChild(m(k.label, "fx-node-math"));
+        panel.appendChild(node);
+
+        if (k.def){
+          var d = document.createElement("div");
+          d.className = "fx-def math"; d.dataset.tex = k.def;
+          panel.appendChild(d);
+        }
+        if (k.note){
+          var p = document.createElement("p");
+          p.className = "fx-note"; p.textContent = k.note;
+          panel.appendChild(p);
+        }
+        panel.classList.add("open");
+        if (hint) hint.style.display = "none";
+        paint(k.kids || []);
+        if (window.renderMath) window.renderMath();
+      }
+
+      function reset(){
+        stack = [];
+        panel.innerHTML = ""; panel.classList.remove("open");
+        if (hint) hint.style.display = "";
+        paint(spec.kids || []);
+      }
+
+      paint(spec.kids || []);
+    });
+  }
+
+  if (document.readyState === "loading"){
+    document.addEventListener("DOMContentLoaded", fxInit);
+  } else { fxInit(); }
+
+  var mo = new MutationObserver(function(){ fxInit(); });
+  mo.observe(document.body, { childList: true, subtree: true });
+  window.fxInit = fxInit;
+})();
 </script>
 </body>
 </html>

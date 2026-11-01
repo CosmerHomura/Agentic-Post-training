@@ -8,7 +8,7 @@
 
 **没有标准答案：学生自己写一版，教师逐 token 告诉它「换了我，每个词该有多大概率」，学生去对齐这个概率分布。**
 
-SFT 给的是**一个**答案（硬标签）；蒸馏给的是**一整张概率表**（软标签）。所以同样的数据量，蒸馏的信号密度高得多。
+SFT给的是**一个**答案（硬标签）；蒸馏给的是**一整张概率表**（软标签）。所以同样的数据量，蒸馏的信号密度高得多。
 
 ---
 
@@ -36,7 +36,7 @@ SFT 给的是**一个**答案（硬标签）；蒸馏给的是**一整张概率�
 | **On-policy 蒸馏（GKD）** | **学生当场生成** | 教师在**学生生成的那串 token** 上的完整分布 | `DistillationTrainer` |
 | **自蒸馏** | 学生生成（教师=同一模型+更多上下文） | 同上 | 同为 `DistillationTrainer`，教师换配置 |
 
-本教程讲第二种，也是 TRL 实现的那一种（GKD，论文 2306.13649）。
+本教程讲第二种，也是 TRL实现的那一种（GKD，论文 2306.13649）。
 
 ---
 
@@ -80,7 +80,7 @@ JSONL（只有 prompt）
    ──学生/教师各 forward 一次──►  每个位置上两张概率表 ──► 散度 ──► loss
 ```
 
-下面每段都是 `python train_distill.py --inspect` / `python train_distill.py` 会打印的内容。
+下面每段都是 `python 02-蒸馏/code/train_distill.py --inspect` / `python 02-蒸馏/code/train_distill.py` 会打印的内容。
 
 > **说明**：带具体数字的段落是**预期的示意值**——脚本打印的字段与结构就是这些，数字随模型、采样和卡而变。
 > 你跑完把 `runs/distill/report.md` 发我，我会把这里全部换成你的实测输出。
@@ -231,15 +231,59 @@ JSONL（只有 prompt）
 
 数值不同（0.0408 vs 0.0489）—— **KL 不对称**，这就是 β 存在的理由：你可以选往哪边偏。
 
-**④ β 混合后**（β = 0.5）：先把两个分布平均起来 `p_M = 0.5·p_S + 0.5·p_T = [0.55, 0.30, 0.115, 0.035]`，再各算一次到 `p_M` 的 KL：
+**④ β 混合后**（β = 0.5）：先把两个分布掺成中间的 $p_M = (1-\beta)p_S + \beta p_T$，再各算一次「到 $p_M$」的 KL：
 
-```
-  L = β·KL(p_T‖p_M) + (1−β)·KL(p_S‖p_M)
-    = 0.5 × 0.0120 + 0.5 × 0.0100
-    = 0.0110
+```fx
+title: 蒸馏的损失：在两种 KL 之间滑动
+tex: L_\beta = \begin{cases} \mathrm{KL}\left(p_T \,\|\, p_S\right) & \beta=0 \\[2pt] \mathrm{KL}\left(p_S \,\|\, p_T\right) & \beta=1 \\[2pt] \beta\cdot\mathrm{KL}\left(p_T \,\|\, p_M\right)+(1-\beta)\cdot\mathrm{KL}\left(p_S \,\|\, p_M\right) & 0<\beta<1 \end{cases}
+note: 学生自己生成句子，教师在同这句话的每个 token 上给一整套分布，学生去对齐它。
+1 @\mathrm{KL}\left(p_T \,\|\, p_S\right) ¦ 前向 KL（β=0） ¦ \mathrm{KL}\left(p\|q\right)=\sum_{x}p(x)\log\frac{p(x)}{q(x)} ¦ 教师认为可能的词，学生也必须留概率，否则这一项爆炸——所以学生会被摊平。
+1.1 @p(x)\log\frac{p(x)}{q(x)} ¦ 单个词的贡献 ¦ ¦ 教师 0.60 / 学生 0.50 → +0.1094；教师 0.02 / 学生 0.05 → -0.0183。
+1.2 @\log\frac{p(x)}{q(x)} ¦ 对数比 ¦ ¦ 低估教师看好的词时为正，高估时为负；四项相加就是这一位置的散度。
+2 @\mathrm{KL}\left(p_S \,\|\, p_T\right) ¦ 反向 KL（β=1） ¦ ¦ 反过来，只惩罚「学生押注了教师不认可的词」，学生容易塌进教师的主模式。
+3 @p_M ¦ 掺出来的中间分布 ¦ p_M=(1-\beta)\,p_S+\beta\,p_T ¦ β=0.5 时取两者平均，这正是 JSD 的定义。
+4 @\beta ¦ 往教师偏多少 ¦ ¦ 0 = 纯前向 KL，1 = 纯反向 KL，0.5 = 对称 JSD；注意 TRL 的 DistillationConfig 默认是 1.0。
+4.1 @\beta\to 1 ¦ 端点附近的线性行为 ¦ L_\beta \approx (1-\beta)\cdot\mathrm{KL}\left(p_S\|p_T\right) ¦ 所以 β=1 打印 0.0000、β=0.99 打印 ≈0.0005，斜率才是那条 KL。
+5 @p_T \,/\, p_S ¦ 教师 / 学生分布 ¦ ¦ 都在同一个 151936 维词表上，逐 token 算一次，一条 completion 有 137 个位置。
 ```
 
-比单独用任一边都小 —— 因为 `p_M` 在两者中间，两边都「够近」。JSD 的名字就是这么来的。
+**为什么端点是分开写的？** 因为中间那个式子在端点上会自己退化成 0：
+
+- β = 1 时 $p_M = p_T$，于是 $\mathrm{KL}(p_T\|p_M)=0$，而 $(1-\beta)$ 这个权重也是 0 —— 两项都没了。
+- β = 0 时 $p_M = p_S$，同理。
+
+也就是说，中间式只在 $0<\beta<1$ 区间内是"散度"；**两个端点要单独定义成那条 KL**。这也正是 `trl/experimental/gkd/gkd_trainer.py` 里 `generalized_jsd_loss()` 写成 `if beta == 0 … elif beta == 1 … else …` 三个分支的原因（源码 278–297 行）。
+
+端点附近中间式并不是真的"没有梯度"，它是**线性趋于 0**：
+
+```math
+\begin{aligned}
+\beta \to 1:\quad & L_\beta \approx (1-\beta)\cdot \mathrm{KL}(p_S\|p_T) = (1-\beta)\times 0.0489 \\
+\beta \to 0:\quad & L_\beta \approx \beta\cdot \mathrm{KL}(p_T\|p_S) = \beta\times 0.0408
+\end{aligned}
+```
+
+所以 β=1 时你看到 `L = 0.0000`、β=0.99 时看到 `L ≈ 0.0005`，斜率才是那条 KL。这也解释了为什么**不同 β 之间的 loss 数值不能直接比大小**（见下面第 ⑤ 条）。
+
+| 符号 | 含义 | 本例取值 |
+|---|---|---|
+| $p_T$ | 教师在该位置的概率分布（词表上的一个向量） | `[0.60, 0.30, 0.08, 0.02]` |
+| $p_S$ | 学生**自己生成**这句话时给出的分布 | `[0.50, 0.30, 0.15, 0.05]` |
+| $p_M$ | 掺起来的中间分布 $(1-\beta)p_S+\beta p_T$ | β=0.5 → `[0.55, 0.30, 0.115, 0.035]` |
+| $\mathrm{KL}(p\|q)$ | $\sum_v p_v \ln\frac{p_v}{q_v}$，两项分布差多远 | 0.0120（对教师）、0.0100（对学生） |
+| $\beta$ | 往教师偏多少：0 = 纯前向 KL，1 = 纯反向 KL，0.5 = JSD | `DistillationConfig.beta`（**默认 1.0**） |
+
+代入数字：
+
+```math
+L_{0.5} = 0.5 \times 0.0120 + 0.5 \times 0.0100 = 0.0110
+```
+
+**为什么它不是两个 KL 的平均**：$p_M$ 本身随 $\beta$ 移动，所以 $\beta$ 一变，两个 KL 的靶子也变；β=0.5 时它恰好等于 JSD（对称、有界，上限 $\ln 2 \approx 0.693$）。
+
+β=0.5 时比单独用任一边都小（0.0110 vs 0.0408 / 0.0489）—— 因为 $p_M$ 在两者中间，两边都「够近」。JSD 的名字就是这么来的。但**这个更小不代表拟合更好**：分子里的靶子变了，不是同一个量。
+
+> 想从「熵 → 交叉熵 → KL → JS」把这条线一次看全，见 [第 6 章 · 理论串联](../06-理论串联-从熵到GRPO/README.md)。
 
 **⑤ 最后怎么变成一个数**
 
@@ -269,7 +313,7 @@ JSONL（只有 prompt）
 
 ## 6. 跑起来
 
-脚本：[`code/train_distill.py`](code/train_distill.py)（约 700 行）
+脚本目录：[`code/`](code/)（8 个文件，入口 `train_distill.py`）
 
 ### 6.1 两套数据，别混用
 
@@ -284,26 +328,26 @@ JSONL（只有 prompt）
 
 ### 6.2 命令
 
+**所有命令都在仓库根目录执行**（不需要 cd 进 `code/`）。
+
 ```bash
-cd 02-蒸馏/code
-
 # (1) 只跑数据链路（只要 tokenizer，不需要 GPU）
-python train_distill.py --inspect
+python 02-蒸馏/code/train_distill.py --inspect
 
-# (1).5 不加载模型，把 5.7 节的 KL / JSD 手算打一遍（纯数学）
-python train_distill.py --explain-loss
+# (1).5 不加载模型，把 5.6 节的 KL / JSD 手算打一遍（纯数学）
+python 02-蒸馏/code/train_distill.py --explain-loss
 
 # (2) 本地 3 条 prompt 跑通全流程（验证管线，不代表效果）
-python train_distill.py --max-steps 20 --gen-tokens 96
+python 02-蒸馏/code/train_distill.py --max-steps 20 --gen-tokens 96
 
 # (3) 真正蒸馏：官方数据集 3000 条 prompt，留 100 条算 held-out KL
-python train_distill.py --dataset trl-lib/ultrafeedback-prompt --limit 3000 --eval-size 100
+python 02-蒸馏/code/train_distill.py --dataset trl-lib/ultrafeedback-prompt --limit 3000 --eval-size 100
 
 # 变体
-python train_distill.py --beta 0.0                  # 前向 KL（只学教师分布的面）
-python train_distill.py --beta 1.0                  # 反向 KL（学生更集中）
-python train_distill.py --temperature 1.5           # 更软的教师分布
-python train_distill.py --teacher Qwen/Qwen2.5-7B-Instruct   # 换更强的老师（显存要够）
+python 02-蒸馏/code/train_distill.py --beta 0.0                  # 前向 KL（只学教师分布的面）
+python 02-蒸馏/code/train_distill.py --beta 1.0                  # 反向 KL（学生更集中）
+python 02-蒸馏/code/train_distill.py --temperature 1.5           # 更软的教师分布
+python 02-蒸馏/code/train_distill.py --teacher Qwen/Qwen2.5-7B-Instruct   # 换更强的老师（显存要够）
 ```
 
 依赖：
@@ -312,6 +356,19 @@ python train_distill.py --teacher Qwen/Qwen2.5-7B-Instruct   # 换更强的老�
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
   "trl>=1.16.0" transformers datasets accelerate
 ```
+
+#### 代码不是一个 700 行的文件
+
+| 文件 | 负责什么 |
+|---|---|
+| `code/train_distill.py` | 入口：解析参数、按顺序调用下面这些 |
+| `code/common.py` | 仓库根路径、`runs/distill`·`ckpt/distill-agent`、学生/教师默认名、设备与 dtype |
+| `code/distill_data.py` | 阶段 1：读 prompt（本地 jsonl / 官方数据集）、切 held-out |
+| `code/distill_prompt.py` | 阶段 2~3：`add_generation_prompt` 模板、tokenize |
+| `code/distill_probe.py` | 阶段 4~5：学生生成、教师分布对比、held-out KL 探针 |
+| `code/distill_trainer.py` | 阶段 6：DistillationTrainer + 训练前后各测一次 KL |
+| `code/distill_report.py` | ASCII 损失图 + `runs/distill/report.md` |
+| `code/distill_loss.py` | 5.6 节那张 KL / JSD 手算表（`--explain-loss`） |
 
 | 产物 | 内容 |
 |---|---|
@@ -393,7 +450,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 | `0.5`（脚本默认） | 标准 JSD | 折中、数值稳 | 通用首选 |
 
 > ⚠️ `DistillationConfig.beta` 和 `GRPOConfig.beta` **同名但完全不同**：
-> 这里是"用哪种散度"，GRPO 里是"对参考模型的 KL 惩罚系数"。别抄错。
+> 这里是"用哪种散度"，GRPO里是"对参考模型的 KL 惩罚系数"。别抄错。
 
 > 小细节：`DistillationConfig` 的默认值与 `TrainingArguments` 不同——
 > `logging_steps=10`、`gradient_checkpointing=True`、未设 `fp16` 时 `bf16=True`、`lr=1e-6`。
@@ -424,7 +481,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ### 8.3 产物
 
-- `ckpt/distill-agent/`：可以做 RL 的起点（通常比 SFT 版更"会写"）
+- `ckpt/distill-agent/`：可以做 RL的起点（通常比 SFT 版更"会写"）
 - `runs/distill/report.md`：这次蒸馏的证据
 
 ---
@@ -448,7 +505,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 1. **看分布**：跑完整流程，找到 §5.5 那张表里 `p_教师 - p_学生` 最大的 3 个 token。它们是什么？通常是结构符号（`<tool_call>`、`{`、换行）——说明学生在"格式"上离教师最远。
 2. **换 β**：`--beta 0.0` 与 `--beta 1.0` 各训一次（40 步即可），同一个 prompt 采 5 次，比较答案的**多样性**。前向 KL 应该更散。
 3. **换温度**：`--temperature 2.0`，观察 `entropy` 与生成质量。温度太高教师分布变平，学生学到的是"含糊"。
-4. **数据不加答案**：故意往 JSONL 里加一个 `completion` 字段，看脚本/TRL 怎么处理——理解"蒸馏不需要答案"这件事。
+4. **数据不加答案**：故意往 JSONL里加一个 `completion` 字段，看脚本/TRL 怎么处理——理解"蒸馏不需要答案"这件事。
 
 ---
 

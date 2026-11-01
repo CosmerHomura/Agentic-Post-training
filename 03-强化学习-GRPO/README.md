@@ -105,7 +105,7 @@ def accuracy_reward(completions, ground_truth=None, **kwargs):
 ## 6. 全链路实拍
 
 > 下面第 1～4 步是**结构示意**（真实跑一份，数字随采样变化）；
-> 跑过 `python train_grpo.py` 后把 `runs/grpo/report.md` 发我，我回填成实测值。
+> 跑过 `python 03-强化学习-GRPO/code/train_grpo.py` 后把 `runs/grpo/report.md` 发我，我回填成实测值。
 
 ### 6.1 第 1 步：读数据（没有答案）
 
@@ -131,7 +131,7 @@ def accuracy_reward(completions, ground_truth=None, **kwargs):
 <|im_start|>assistant
 ```
 
-到 `assistant\n` 为止都相同。**差别从下一步开始**：SFT 在这里塞人写好的轨迹，GRPO 让模型自己往下写 G 条。
+到 `assistant\n` 为止都相同。**差别从下一步开始**：SFT在这里塞人写好的轨迹，GRPO 让模型自己往下写 G 条。
 
 ### 6.3 第 3 步：采样 G 条并逐条打分
 
@@ -210,7 +210,7 @@ def accuracy_reward(completions, ground_truth=None, **kwargs):
   损失贡献      -min(1.30, 1.20)              = -1.20
 ```
 
-概率涨到 1.2 倍以后**不再奖励**（`min` 取小的那个），防止一步更新把策略推飞。这就是 PPO 的 clip。
+概率涨到 1.2 倍以后**不再奖励**（`min` 取小的那个），防止一步更新把策略推飞。这就是 PPO的 clip。
 
 对**错误**答案里同一个 token（`A = -1`）：
 
@@ -269,19 +269,41 @@ def accuracy_reward(completions, ground_truth=None, **kwargs):
 
 ### 7.5 最后怎么变成一个数
 
+```fx
+title: GRPO 的目标函数：一层层拆开
+tex: \mathcal{L}_{\text{GRPO}} = -\frac{1}{G}\sum_{i=1}^{G}\frac{1}{|o_i|}\sum_{t}\min\left(r_{i,t}\hat{A}_i,\ \mathrm{clip}\left(r_{i,t},1-\varepsilon,1+\varepsilon\right)\hat{A}_i\right)
+note: 同一道题采 G 条答案，按「比同组平均好多少」加权，把好答案的概率推上去。
+1 @\hat{A}_i ¦ 组内优势 ¦ \hat{A}_i=\frac{r_i-\mathrm{mean}\left(r_1,\dots,r_G\right)}{\mathrm{std}\left(r_1,\dots,r_G\right)} ¦ 一个答案一个数，整条 completion 共用同一个值。
+1.1 @r_i ¦ 这条答案的分数 ¦ ¦ 奖励函数给的，整条轨迹只换回这一个标量。
+1.2 @\mathrm{mean}\left(r_1,\dots,r_G\right) ¦ 组内均值 ¦ ¦ 这就是「基线」——GRPO 用它替掉了 critic。
+1.3 @\mathrm{std}\left(r_1,\dots,r_G\right) ¦ 组内标准差 ¦ ¦ 除以它让不同题目的优势可比；一组全对时标准差为 0，就学不到东西。
+2 @r_{i,t} ¦ 概率比 ¦ r_{i,t}=\exp\left(\log p_{\text{new}}-\log p_{\text{old}}\right) ¦ 新模型对这个 token 的偏好，相对采样时涨了几倍。
+2.1 @\log p_{\text{new}} ¦ 新策略的 logprob ¦ ¦ 更新后的模型重新算一遍该 token 的对数概率。
+2.2 @\log p_{\text{old}} ¦ 采样时的 logprob ¦ ¦ 生成那一刻记下来的那一份，之后不许再变。
+3 @\mathrm{clip}\left(r,1-\varepsilon,1+\varepsilon\right) ¦ 裁剪 ¦ ¦ ε 默认 0.2，把比值卡在 0.8～1.2，防止一步更新把策略推太远。
+4 @\min\left(\cdot,\cdot\right) ¦ 取小 ¦ ¦ 两个方向都只认更保守的那个：涨过头不额外奖励，跌过头也不额外惩罚。
+5 @\frac{1}{G}\sum_{i=1}^{G}\frac{1}{|o_i|}\sum_{t} ¦ 两层平均 ¦ ¦ 外层按答案平均、内层按 token 平均；prompt 段 mask=0，不参与。
+5.1 @|o_i| ¦ 这条 completion 的 token 数 ¦ ¦ 答案长度不同，所以要先各自平均，再对 G 条汇总。
 ```
-  L = - 1/(G·T) · Σ_i Σ_t  min( ratio_{i,t} · A_i ,  clip(ratio_{i,t}, 1-ε, 1+ε) · A_i )
-      + β · KL(π_θ ‖ π_ref)
+
+其中第 7.3 节那个比值是：
+
+```math
+r_{i,t} = \frac{\pi_\theta\left(a_{i,t} \mid s_{i,t}\right)}{\pi_{\text{old}}\left(a_{i,t} \mid s_{i,t}\right)}
+= \exp\left(\log p_{\text{new}} - \log p_{\text{old}}\right)
 ```
 
 | 符号 | 含义 | 本教程取值 |
 |---|---|---|
-| `G` | 每个 prompt 采几条 | `num_generations=8` |
-| `T` | 每条 completion 的 token 数 | ≤ `max_completion_length` |
-| `ratio` | `exp(logp_new - logp_old)` | 由 trainer 内部算 |
-| `ε` | 裁剪幅度 | 默认 0.2（即 0.8~1.2） |
-| `A_i` | 组内优势 | 见 7.2 |
-| `β` | 参考模型 KL 惩罚 | **默认 0.0**（不用参考模型，省一份显存） |
+| \(G\) | 每个 prompt 采几条 | `num_generations=8` |
+| \(T\) | 每条 completion 的 token 数 | ≤ `max_completion_length` |
+| $r_{i,t}$ | 第 i 条答案第 t 个 token 的「概率涨了几倍」 | 见 7.3 的 1.30 |
+| $A_i$ | 第 i 条的组内优势（一个数，整条共用） | 见 7.2，如 +1.0 / −1.0 |
+| $\varepsilon$ | 裁剪幅度 | 默认 0.2，即区间 0.8 到 1.2 |
+| $\beta$ | 参考模型 KL 惩罚系数 | **默认 0.0**（不用参考模型，省一份显存） |
+| $\pi_\theta$ / $\pi_{\text{ref}}$ | 当前策略 / 冻结的参考策略 | 开 $\beta>0$ 时才有参考模型 |
+
+**三层平均别搞混**：外层 $\frac{1}{GT}\sum_i\sum_t$ 是把「G 条 × 每条 T 个 token」全加起来除以总数；$A_i$ 对同一条里的所有 token 是**同一个值**；$r_{i,t}$ 每个 token 各不相同。
 
 **只对 completion 的 token 求平均**：prompt 段的 `loss_mask = 0`，不参与。这点和第 1 章的 SFT 掩码完全一致 —— 模型不为「别人写的东西」负责。
 
@@ -290,6 +312,8 @@ def accuracy_reward(completions, ground_truth=None, **kwargs):
 > 损失 = 「这条答案比平均好多少」×「这个 token 的概率涨了多少」，涨过头就截断。
 
 ---
+
+> 想从「贝尔曼 → 策略梯度 → TD → GAE → PPO」把这条线一次看全，见 [第 6 章 · 理论串联](../06-理论串联-从熵到GRPO/README.md)。
 
 ## 8. 代码与参数
 
@@ -326,7 +350,7 @@ trainer = GRPOTrainer(
 
 ## 9. 跑起来
 
-脚本：[`code/train_grpo.py`](code/train_grpo.py)（约 640 行）
+脚本目录：[`code/`](code/)（8 个文件，入口 `train_grpo.py`）
 
 ### 9.1 两套数据，别混用
 
@@ -341,28 +365,44 @@ trainer = GRPOTrainer(
 
 ### 9.2 命令
 
-```bash
-cd 03-强化学习-GRPO/code
+**所有命令都在仓库根目录执行**（不需要 cd 进 `code/`）。
 
+```bash
 # 只跑数据链路（只要 tokenizer，不需 GPU）
-python train_grpo.py --inspect
+python 03-强化学习-GRPO/code/train_grpo.py --inspect
 
 # 不加载模型，把第 7 节的数字手算打一遍
-python train_grpo.py --explain-loss
+python 03-强化学习-GRPO/code/train_grpo.py --explain-loss
 
 # 本地 3 道题冒烟（验证管线；大概率 std=0，这是正常的）
-python train_grpo.py --max-steps 2 --num-generations 4 --max-new 128
+python 03-强化学习-GRPO/code/train_grpo.py --max-steps 2 --num-generations 4 --max-new 128
 
 # 真训练：官方题目 3000 道，留 100 道做 held-out pass@1 评测
-python train_grpo.py --dataset trl-lib/DeepMath-103K --limit 3000 --eval-size 100
+python 03-强化学习-GRPO/code/train_grpo.py --dataset trl-lib/DeepMath-103K --limit 3000 --eval-size 100
 
 # 显存紧 / 想快：G=4、短答案
-python train_grpo.py --dataset trl-lib/DeepMath-103K --limit 3000 --num-generations 4 --max-new 192
+python 03-强化学习-GRPO/code/train_grpo.py --dataset trl-lib/DeepMath-103K --limit 3000 \
+    --num-generations 4 --max-new 192
 ```
+
+#### 代码不是一个 600 行的文件
+
+| 文件 | 负责什么 |
+|---|---|
+| `code/train_grpo.py` | 入口：解析参数、按顺序调用下面这些 |
+| `code/common.py` | 仓库根路径、`runs/grpo`·`ckpt/grpo-agent`、打印、tokenizer 小工具 |
+| `code/grpo_data.py` | 阶段 1：读题目、解析标准答案、答案归一化、两个格式正则 |
+| `code/grpo_rewards.py` | 奖励函数（格式分、正确性分）+ 组内优势 `score_group()` |
+| `code/grpo_rollout.py` | 阶段 2~3：模板、采 G 条并打分、held-out `pass@1` |
+| `code/grpo_trainer.py` | 阶段 5：GRPOTrainer + 训练前后各测一次 |
+| `code/grpo_report.py` | ASCII 曲线 + `runs/grpo/report.md` |
+| `code/grpo_loss.py` | 第 7 节那套手算（`--explain-loss`） |
+
+你以后要换奖励函数，只需要动 `grpo_rewards.py` 一个文件。
 
 依赖：`pip install "trl>=1.16.0" transformers datasets accelerate`
 
-分卡跑（大模型时）：`accelerate launch train_grpo.py`，`num_generations` 要能被卡数整除。
+分卡跑（大模型时）：`accelerate launch 03-强化学习-GRPO/code/train_grpo.py`，`num_generations` 要能被卡数整除。
 
 ### 9.3 怎么判断真的学会了
 

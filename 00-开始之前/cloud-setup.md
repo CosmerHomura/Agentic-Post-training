@@ -15,7 +15,7 @@
 | 跑通 ③ GRPO（小规模） | 1×RTX 4090 24G | 同上 | `num_generations` 降到 4～8 |
 | 跑通 ④ 环境（长 episode） | 1×A100 40G | ¥5–6 / 小时 | 8k token 预算不容易爆 |
 | ⑤ Harness（模型 ≤1.7B） | 2×RTX 4090 24G | ¥3–4 / 小时 | vLLM 与 trainer 分卡 |
-| ⑤ Harness（`Qwen3-4B`） | 1×A800 80G 或 2×A100 | ¥9 / 小时 起 | trainer 侧全参要 48–64GB 显存 |
+| ⑤ Harness（`Qwen3-4B`） | 1×A800 80G 或 2×A100 | ¥9 / 小时起 | trainer 侧全参要 48–64GB 显存 |
 
 选择的三个要点：
 
@@ -49,7 +49,7 @@ git clone https://github.com/<你的账号>/agentic-post-training.git
 cd agentic-post-training
 ```
 
-私有仓库用 HTTPS 时要输 **Personal Access Token**（GitHub：Settings → Developer settings → Tokens，勾 `repo`），不是登录密码；或者配 SSH key（`ssh-keygen -t ed25519`，把 `~/.ssh/id_ed25519.pub` 贴进 GitHub → SSH keys）。
+私有仓库用 HTTPS时要输 **Personal Access Token**（GitHub：Settings → Developer settings → Tokens，勾 `repo`），不是登录密码；或者配 SSH key（`ssh-keygen -t ed25519`，把 `~/.ssh/id_ed25519.pub` 贴进 GitHub → SSH keys）。
 
 ### 10.2 scp / rsync（不建仓库，一次拷完）
 
@@ -76,27 +76,138 @@ AutoDL / 阿里云 PAI / 恒源云的控制台都有 JupyterLab，直接把整�
 
 ## 11. 开机器后 10 分钟
 
-每台新实例照抄这一段，四步走完就能开跑。
+每台新实例照抄这一段。**先看方案 A——它不下载 torch，十分钟内就能开跑。**
+
+### 11.1 方案 A：克隆镜像自带的 base（推荐，零大文件下载）
+
+**先确认 base 里真有 torch**（有些镜像是干净的 miniconda，base 只有 1GB，没装 torch）：
 
 ```bash
-# (1) conda 环境（为什么必须建，见 11.1）
+conda run -n base python -c "import torch;print(torch.__version__, torch.version.cuda)" 2>&1 | tail -2
+```
+
+打出版本号才走方案 A；报 `ModuleNotFoundError` 就直接跳到 11.2（但环境仍要建到数据盘，见 11.6）。
+
+确认有 torch 之后，克隆一份 base（硬链接，几秒完成，几乎不占磁盘）：
+
+```bash
+conda create -n postrl --clone base -y
+conda activate postrl
+
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_HOME=/root/autodl-tmp/hf
+
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U pip
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
+  "trl>=1.16.0" datasets accelerate openenv-core
+```
+
+要补的只有几十 MB 的纯 Python 包，`torch` 一个字节都不用下。
+
+**别写 `trl[vllm]`**：`[vllm]` 会让 pip 重装 vllm，并把它 pin 的 torch 一起换掉，于是又回到 `cuda=False` 那个坑（见 11.4）。
+
+### 11.2 方案 B：空环境自己装 torch（走国内镜像，别用官方源）
+
+如果就是想从零开始：
+
+```bash
 conda create -n postrl python=3.11 -y
 conda activate postrl
 
-# (2) 镜像与缓存（国内直连 huggingface.co 基本必失败）
 export HF_ENDPOINT=https://hf-mirror.com
-export HF_HOME=/root/autodl-tmp/hf          # 系统盘通常只有 30G，模型别放那儿
+export HF_HOME=/root/autodl-tmp/hf
 
-# (3) 依赖（清华源，装进 postrl 环境）
+nvidia-smi | head -4        # 右上角 "CUDA Version: 12.8" 就是要匹配的版本
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -U pip
-pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
-  "trl>=1.16.0" transformers datasets accelerate trl[vllm] openenv-core
+```
 
-# (4) 自检，三行都要过
+torch 走官方源在国内往往只有几十 KB/s。下面两个国内镜像都有 cu128 完整目录，`torch-2.11.0+cu128-cp311` 的 wheel 约 820MB：
+
+> **版本上限**：cu128 目前最高只到 **torch 2.11.0**。pip 从 PyPI 装到的 2.13 是 cu130 构建，所以「降到 cu128」必然同时把 torch 版本降到 2.11——这是正常的，不是装错了。
+
+**推荐：把南大索引当 `--index-url` 用**（它是标准 PEP 503 索引，pip 能顺着页面找到 wheel）：
+
+```bash
+pip install "torch==2.11.0+cu128" \
+  --index-url https://mirror.nju.edu.cn/pytorch/whl/cu128 \
+  --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+`--extra-index-url` 是用来补 `nvidia-*`、`sympy` 这些依赖的。版本号写死成 `2.11.0+cu128`，pip 就不会去拿清华源里更高版本的 cu130 包。
+
+**如果直链下 403**：阿里云的 `pytorch-wheels` 会对部分 IP 直接返回 `403 Forbidden`（pip 和 curl 都一样），这不是你写错了。两个办法：
+
+```bash
+# 办法一：走南大直链（同一份文件）
+wget -c "https://mirror.nju.edu.cn/pytorch/whl/cu128/torch-2.11.0%2Bcu128-cp311-cp311-manylinux_2_28_x86_64.whl" \
+  -O "/root/torch-2.11.0+cu128.whl"
+pip install "/root/torch-2.11.0+cu128.whl" -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 办法二：带浏览器 UA 从阿里云下（403 多半是 UA/防盗链判定）
+curl -L -C - -A "Mozilla/5.0" -o "/root/torch-2.11.0+cu128.whl" \
+  "https://mirrors.aliyun.com/pytorch-wheels/cu128/torch-2.11.0%2Bcu128-cp311-cp311-manylinux_2_28_x86_64.whl"
+pip install "/root/torch-2.11.0+cu128.whl" -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+先本地存成 `.whl` 再 `pip install 文件` 还有个好处：断了能续传，不会每次重下 820MB。
+
+还嫌慢就上多线程下载器：`aria2c -x16 -s16 <上面的 url> -o /root/torch.whl`，下完 `pip install /root/torch.whl`。
+
+镜像可用性（2026-10 实测）：
+
+| 镜像 | `pytorch-wheels/cu128` | 说明 |
+|---|---|---|
+| 阿里云 `mirrors.aliyun.com/pytorch-wheels/` | ✅ 200 / ⚠️ 403 | 目录可浏览；**部分 IP 直链下 wheel 会 403**，见上面两个办法 |
+| 南大 `mirror.nju.edu.cn/pytorch/whl/` | ✅ 200 | 完整 PEP 503 索引，可直接当 `--index-url` 用（推荐） |
+| 上交 `mirror.sjtu.edu.cn` | ⚠️ 301 | 能进，但要跟随跳转，且没有 `torch/` 子索引 |
+| 清华 / 南大 / 北外 / CERNET / 中科大 | ❌ 404 | 只镜像 anaconda 与 PyPI，没有 pytorch-wheels |
+
+按驱动选目录：
+
+| `nvidia-smi` 右上角 | 用哪个目录 |
+|---|---|
+| CUDA Version: 12.8 | `https://mirror.nju.edu.cn/pytorch/whl/cu128/` |
+| 12.4 | `.../cu124/` |
+| 12.1 | `.../cu121/` |
+| 13.0 以上 | `.../cu130/` |
+
+装错的典型报错（**这条不是你代码的问题**）：
+
+```
+UserWarning: CUDA initialization: The NVIDIA driver on your system is too old
+(found version 12080) ... torch 2.13.0+cu130  cuda=False
+```
+
+意思是 torch 是 cu130 编的、驱动只到 12.8。换成对应目录的 wheel 重装即可，不用动驱动：
+
+```bash
+# 0) 先看清楚现在装了什么：vllm 与 torch 是强绑定，换 torch 前必须先确认
+pip list | grep -Ei '^(torch|vllm|trl|transformers) '
+pip show vllm 2>/dev/null | grep -i requires     # 它会写死 torch==某个版本
+
+# 1) 换 wheel（就地修，不用删环境）
+pip uninstall -y torch torchvision torchaudio
+pip install "https://mirrors.aliyun.com/pytorch-wheels/cu128/torch-2.11.0%2Bcu128-cp311-cp311-manylinux_2_28_x86_64.whl" \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -c "import torch;print(torch.__version__, torch.cuda.is_available())"   # 要 True
+pip check          # 看依赖有没有被这次替换弄坏
+```
+
+如果上一步发现 vllm 写死了别的 torch 版本，两条路选一条：把 vllm 一起换到匹配你 wheel 的版本，或者**先把 vllm 卸掉**——第 1、2 步根本用不到它，等到第 3～5 步再装。
+
+**要 vllm 的话最后再装**（它只用于第 3～5 步加速）：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple vllm`，装完**重跑 11.3 自检**——vllm 会把 torch 换成它 pin 的版本，如果又变成高版本 CUDA 编的，就按上面的办法把同版本号的 cu128 wheel 装回去。
+
+第 4 步的 `environment_factory` 要求 `transformers>=5.2.0`，④ 报版本不够时再单独升一行 `pip install -U "transformers>=5.2.0"`。
+
+### 11.3 装完自检（两条路线都跑这三行）
+
+```bash
 python -c "import torch;print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 python -c "import transformers, trl;print(transformers.__version__, trl.__version__)"
 python -c "from transformers import AutoTokenizer;t=AutoTokenizer.from_pretrained('Qwen/Qwen3-0.6B');print('template ok', len(t.chat_template))"
 ```
+
+第一行必须是 `True`；`torch.version.cuda` 要 ≤ `nvidia-smi` 那个版本号。
 
 第 4 步的 `environment_factory` 要求 `transformers>=5.2.0`，④ 报版本不够时再单独升一行 `pip install -U "transformers>=5.2.0"`。
 
@@ -110,17 +221,17 @@ echo 'export HF_HOME=/root/autodl-tmp/hf' >> ~/.bashrc
 
 漏掉第一行的症状是 `pip install` 装进了 base（`which python` 指到 `/usr/bin` 或 conda base），漏掉后两行的症状是模型下载 `ConnectionError` / `Timeout`。
 
-### 11.1 为什么必须建环境
+### 11.4 为什么必须建环境
 
-1. **`trl[vllm]` 会顺手换掉 torch**。vLLM 对 torch 版本卡得很死，pip 装它时会覆盖镜像里那份预编译的 torch+CUDA，症状是上面 ④ 里 `torch.cuda.is_available()` 变成 `False`，或 NCCL 报 `unhandled cuda error`。真遇到了就**降 vllm 版本去匹配镜像 torch**，别反过来升 torch。
+1. **`trl[vllm]` 会顺手换掉 torch**。vLLM 对 torch 版本卡得很死，pip 装它时会覆盖镜像里那份预编译的 torch+CUDA，症状是自检里 `torch.cuda.is_available()` 变成 `False`，或 NCCL报 `unhandled cuda error`。真遇到了就**降 vllm 版本去匹配镜像 torch**，别反过来升 torch。
 2. **依赖会打架**：教程要较新的 `transformers`，你别的项目可能锁在旧版本。
 3. **实例一换就没了**，有 conda 环境 + `requirements.txt`（`pip freeze > requirements.txt`）才谈得上复现。
 
-conda 建的是空环境，torch 要按镜像的 CUDA 版本重装一份（`pip install torch --index-url https://download.pytorch.org/whl/cu121` 之类），代价是几 GB 下载；好处是完全隔离，同机跑多个互斥项目也不打架。
+方案 B 就是这条路：代价是几 GB 的 torch 下载（走阿里云镜像大约几分钟）；好处是完全隔离，同机跑多个互斥项目也不打架。不想付这个代价就用方案 A 的 `conda create --clone base`，隔离性一样有，下载量接近零。
 
 本地 Windows / macOS 同样用 conda：`conda create -n postrl python=3.11 -y && conda activate postrl`。
 
-### 11.2 AutoDL 学术加速：开与关
+### 11.5 AutoDL 学术加速：开与关
 
 AutoDL 的「学术加速」是一个只会对 **github.com / githubusercontent.com / githubassets.com / huggingface.co** 生效的代理，用来解决 `git clone` 和直连 HF 慢的问题。
 
@@ -140,6 +251,49 @@ unset http_proxy && unset https_proxy
 如果执行 `source /etc/network_turbo` 报 `No such file or directory`，说明你所在区域不支持该代理，那就走镜像站 + `ghproxy.link`（地址会变，进站点看当前可用的）。
 
 
+### 11.6 报 `[Errno 28] No space left on device` 怎么办
+
+装 torch 时最常见，不是网络问题，是**系统盘（`/root` 那 30G）被填满**了。
+一个 cu128 的 torch 要：wheel 本体 820MB + 解压后 2.6GB + 一堆 `nvidia-*-cu12` 依赖约 4GB + pip 缓存 1～2GB ≈ **7～8GB**。
+
+`pip` 的缓存往往是最大的一块：装过几次 torch，`/root/.cache/pip` 轻松到 10GB 以上（每次 820MB 的 wheel 都会留一份）。所以**第一步永远是清缓存**。
+
+先看清楚谁在吃盘：
+
+```bash
+df -h / /root/autodl-tmp              # 系统盘 vs 数据盘
+du -sh /root/* 2>/dev/null | sort -h | tail -6
+du -sh /root/miniconda3/envs/*        # 是不是环境建在系统盘了
+du -sh "$(pip cache dir)" 2>/dev/null # pip 缓存
+```
+
+三条治法，按顺序试：
+
+```bash
+# 1) 清缓存 + 卸掉装了一半的 torch
+pip cache purge
+conda clean -a -y
+rm -rf /root/.cache/pip /root/tmp/*.whl
+pip uninstall -y torch torchvision torchaudio
+
+# 2) 新环境直接建到数据盘（路径用 -p 指定，不走 miniconda3/envs）
+conda create -p /root/autodl-tmp/envs/postrl python=3.11 -y
+conda activate /root/autodl-tmp/envs/postrl
+
+# 3) 缓存和临时目录也搬到数据盘，再装（--no-cache-dir 不再留副本）
+export PIP_CACHE_DIR=/root/autodl-tmp/.cache/pip
+export TMPDIR=/root/autodl-tmp/tmp
+mkdir -p "$PIP_CACHE_DIR" "$TMPDIR"
+pip install --no-cache-dir "torch==2.11.0+cu128" \
+  --index-url https://mirror.nju.edu.cn/pytorch/whl/cu128 \
+  --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+盘上的预算大致是：torch 全家桶解压后约 6.5GB（其中 4GB 是 nvidia 的库），模型缓存 `HF_HOME=/root/autodl-tmp/hf` 另算（0.6B 约 1.2GB，1.7B 约 3.4GB）。
+
+最省的做法还是 **11.1 的克隆 base**：镜像自带的 torch 本来就按这张卡的驱动编好，`--clone` 用硬链接，几秒完成且几乎不占额外空间，一个字节的 wheel 都不用下。
+
+
 ---
 
 ## 12. 每一步怎么跑
@@ -150,26 +304,23 @@ unset http_proxy && unset https_proxy
 所以每条命令分两段：先小跑验证管线，再换官方数据集真训。
 
 ```bash
-cd 01-监督微调-SFT/code
-python train_sft.py --inspect                      # 只看数据链路，不需 GPU
-python train_sft.py --dataset trl-lib/Capybara --limit 2000 --eval-size 100
+# 全部在仓库根目录执行（不用 cd 进 code/）
+python 01-监督微调-SFT/code/train_sft.py --inspect          # 只看数据链路，不需 GPU
+python 01-监督微调-SFT/code/train_sft.py --dataset trl-lib/Capybara --limit 2000 --eval-size 100
 
-cd 02-蒸馏/code
-python train_distill.py --inspect
-python train_distill.py --dataset trl-lib/ultrafeedback-prompt --limit 3000 --eval-size 100
+python 02-蒸馏/code/train_distill.py --inspect
+python 02-蒸馏/code/train_distill.py --dataset trl-lib/ultrafeedback-prompt --limit 3000 --eval-size 100
 
-cd 03-强化学习-GRPO/code
-python train_grpo.py --inspect
-python train_grpo.py --dataset trl-lib/DeepMath-103K --limit 3000 --eval-size 100
+python 03-强化学习-GRPO/code/train_grpo.py --inspect
+python 03-强化学习-GRPO/code/train_grpo.py --dataset trl-lib/DeepMath-103K --limit 3000 --eval-size 100
 
-cd 04-RL环境/code
-python train_grpo_env.py
+python 04-RL环境/code/train_grpo_env.py
 ```
 
-脚本里的数据路径是 `../data/xxx.jsonl`，所以**必须先进到 `code/` 目录**再执行；在仓库根目录跑会报文件不存在。
+脚本用 `Path(__file__).resolve().parents[2]` 定位仓库根，所以**从哪个目录启动都能找到 `runs/`、`ckpt/` 和 `data/`**。
 加 `--dataset` 后数据从 Hugging Face 下载，记得 `export HF_ENDPOINT=https://hf-mirror.com`。
 
-每章「怎么判断真的学会了」看哪个指标，README 里都有一张表（SFT 看 held-out -ln p、蒸馏看 KL、GRPO 看 pass@1）。
+每章「怎么判断真的学会了」看哪个指标，README 里都有一张表（SFT 看 held-out -ln p、蒸馏看 KL、GRPO看 pass@1）。
 
 ### 12.2 用 tmux 防断线
 
@@ -177,11 +328,11 @@ python train_grpo_env.py
 
 ```bash
 tmux new -s train          # 新建会话
-python train_grpo.py       # 在里面跑
+python 03-强化学习-GRPO/code/train_grpo.py     # 在里面跑
 # Ctrl+B 然后 D 脱离；下次 tmux attach -t train 回到现场
 ```
 
-临时任务用 `nohup python train_grpo.py > log.txt 2>&1 &` 也行。
+临时任务用 `nohup python 03-强化学习-GRPO/code/train_grpo.py > log.txt 2>&1 &` 也行。
 
 ### 12.3 双卡（⑤ Harness）
 
@@ -197,9 +348,8 @@ vllm serve Qwen/Qwen3-0.6B \
 ```
 
 ```bash
-# 窗口 2：训练，占 1 号卡
-cd 05-Harness与规模化/code
-CUDA_VISIBLE_DEVICES=1 accelerate launch train_async_grpo.py
+# 窗口 2：训练，占 1 号卡（参数仍是仓库根目录下的脚本路径）
+CUDA_VISIBLE_DEVICES=1 accelerate launch 05-Harness与规模化/code/train_async_grpo.py
 ```
 
 脚本里的 `vllm_server_url` 默认就是 `http://localhost:8000`（见 `train_async_grpo.py` 顶部注释），换成别的端口要同步改。

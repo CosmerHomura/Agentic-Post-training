@@ -21,7 +21,8 @@ CHAPTERS = [
     ("ch4", "03-强化学习-GRPO", "03 · 强化学习 GRPO", "只有一个分数怎么学"),
     ("ch5", "04-RL环境", "04 · RL 环境", "多轮交互与工具"),
     ("ch6", "05-Harness与规模化", "05 · Harness 与规模化", "真实 agent + 异步训练"),
-    ("ch7", "99-附录-资源与术语", "99 · 附录", "原文对照 / 链接 / 术语 / FAQ"),
+    ("ch7", "06-理论串联-从熵到GRPO", "06 · 理论串联", "从熵到 GRPO 的一条线"),
+    ("ch8", "99-附录-资源与术语", "99 · 附录", "原文对照 / 链接 / 术语 / FAQ"),
 ]
 
 DIR2CH = {d: cid for cid, d, _, _ in CHAPTERS}
@@ -31,7 +32,52 @@ CHAPTER_EXTRAS = {
     "ch1": ["cloud-setup.md"],
 }
 
-NUMS = {"ch0": "目", "ch1": "00", "ch2": "01", "ch3": "02", "ch4": "03", "ch5": "04", "ch6": "05", "ch7": "99"}
+# 缩写 → (全称, 中文)。网页里包成 <abbr title="...">，鼠标悬停看解释；
+# 占位符写法是给 GitHub 原文用的，网页版会把这些括号去掉（见 strip_paren）。
+ACRO = {
+    "SFT": ("Supervised Fine-Tuning", "监督微调"),
+    "RL": ("Reinforcement Learning", "强化学习"),
+    "GRPO": ("Group Relative Policy Optimization", "组相对策略优化"),
+    "PPO": ("Proximal Policy Optimization", "近端策略优化"),
+    "GKD": ("Generalized Knowledge Distillation", "广义知识蒸馏"),
+    "KL": ("Kullback-Leibler divergence", "KL 散度"),
+    "JSD": ("Jensen-Shannon Divergence", "JSD 散度"),
+    "LLM": ("Large Language Model", "大语言模型"),
+    "LoRA": ("Low-Rank Adaptation", "低秩适配"),
+    "QLoRA": ("Quantized LoRA", "量化低秩适配"),
+    "TRL": ("Transformer Reinforcement Learning", "TRL 库"),
+    "NCCL": ("NVIDIA Collective Communications Library", "NVIDIA 集合通信库"),
+    "CUDA": ("Compute Unified Device Architecture", "英伟达 GPU 计算平台"),
+    "GPU": ("Graphics Processing Unit", "图形处理器"),
+    "CPU": ("Central Processing Unit", "中央处理器"),
+    "EOS": ("End Of Sequence", "序列结束符"),
+    "JSONL": ("JSON Lines", "按行存 JSON 的文本格式"),
+    "JSON": ("JavaScript Object Notation", "JS 对象表示法"),
+    "API": ("Application Programming Interface", "应用程序接口"),
+    "HTTP": ("HyperText Transfer Protocol", "超文本传输协议"),
+    "HTTPS": ("HyperText Transfer Protocol Secure", "加密的 HTTP"),
+}
+
+ACRO_RE = re.compile(
+    r"(?<![A-Za-z0-9_\-/])(" + "|".join(sorted(ACRO, key=len, reverse=True)) + r")(?![A-Za-z0-9_])"
+)
+
+
+def abbrify(html_text):
+    """只处理标签之外、占位符之外的文本，避免把 href 里的字符也包了。"""
+    parts = re.split(r"(<[^>]+>)", html_text)
+    for i, p in enumerate(parts):
+        if p.startswith("<") or "\x00" in p and not re.search(r"[A-Za-z]", re.sub(r"\x00\d+\x00", "", p)):
+            continue
+
+        def wrap(m):
+            en, zh = ACRO[m.group(1)]
+            return '<abbr title="%s —— %s">%s</abbr>' % (en, zh, m.group(1))
+
+        parts[i] = ACRO_RE.sub(wrap, p)
+    return "".join(parts)
+
+NUMS = {"ch0": "目", "ch1": "00", "ch2": "01", "ch3": "02", "ch4": "03", "ch5": "04", "ch6": "05", "ch7": "06", "ch8": "99"}
 
 
 # ---------------------------------------------------------------- markdown
@@ -67,12 +113,33 @@ class Ctx:
 
 def inline(text, ctx):
     codes = []
+    maths = []
 
     def keep(m):
         codes.append(m.group(2))
         return "\x00%d\x00" % (len(codes) - 1)
 
+    def keep_math(m):
+        # 表格单元格里的 \| 在切分时被换成了 \x01 哨兵，这里还原成 KaTeX 的范数符号
+        maths.append(m.group(1).replace("\x01", "\\|"))
+        return "\x02%d\x02" % (len(maths) - 1)
+
     text = re.sub(r"(`+)(.+?)\1", keep, text, flags=re.S)
+    # 行内公式：$...$，内容里至少要有一个 LaTeX 特征（反斜杠命令 / ^ / _），
+    # 免得把 $1.5/h 这种价格也吃掉
+    def looks_math(t):
+        return bool(
+            re.search(r"\\[a-zA-Z]|\^|_|\{|\}", t)          # LaTeX 命令 / 上下标 / 花括号
+            or re.fullmatch(r"[A-Za-z]", t)                  # 单字母：$s$ $a$ $V$
+            or re.fullmatch(r"[A-Za-z]\s*\([^()]*\)", t)     # 函数式：$b(s)$ $P(s'|s,a)$
+            or ("|" in t and re.fullmatch(r"[A-Za-z\s|'(),.\-]+", t))
+        )
+
+    text = re.sub(r"\$(?!\s)([^\n$]{1,140}?)(?<!\s)\$",
+                  lambda m: keep_math(m) if looks_math(m.group(1)) else m.group(0),
+                  text)
+    # 显式写法 \( ... \)：无条件当公式，用来写 $G$ 这种短符号
+    text = re.sub(r"\\\((.+?)\\\)", keep_math, text)
     text = esc(text)
     text = text.replace("\x01", "&#124;")
 
@@ -98,7 +165,13 @@ def inline(text, ctx):
     def restore(m):
         return "<code>%s</code>" % esc(codes[int(m.group(1))]).replace("\x01", "|")
 
-    return re.sub(r"\x00(\d+)\x00", restore, text)
+    def restore_math(m):
+        tex = maths[int(m.group(1))].replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        return '<span class="imath" data-tex="%s"></span>' % html.escape(tex, quote=True)
+
+    text = re.sub(r"\x00(\d+)\x00", restore, text)
+    text = re.sub(r"\x02(\d+)\x02", restore_math, text)
+    return abbrify(text)
 
 
 def rewrite_link(url, ctx):
@@ -163,6 +236,51 @@ def split_row(row):
     return [c.strip() for c in cells]
 
 
+
+def parse_fx(code):
+    """把 fx 块解析成嵌套字典：title/tex/note + kids 树。"""
+    spec = {"title": "", "tex": "", "note": "", "kids": []}
+    stack = []
+    for raw in code.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("title:"):
+            spec["title"] = line[6:].strip()
+            continue
+        if line.startswith("tex:"):
+            spec["tex"] = line[4:].strip()
+            continue
+        if line.startswith("note:"):
+            spec["note"] = line[5:].strip()
+            continue
+        m = re.match(r"^(\d+(?:\.\d+)*)\s*@(.*)$", line)
+        if not m:
+            continue
+        depth = m.group(1).count(".") + 1
+        # 字段分隔符是「¦」：LaTeX 里的 | 和 \| 都不会误伤
+        parts = [x.strip() for x in m.group(2).split("\u00a6")]
+        while len(parts) < 4:
+            parts.append("")
+        node = {"label": parts[0], "name": parts[1], "def": parts[2], "note": parts[3], "kids": []}
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+        parent = spec["kids"] if not stack else stack[-1][1]["kids"]
+        parent.append(node)
+        stack.append((depth, node))
+    return spec
+
+
+def render_fx(code):
+    spec = parse_fx(code)
+    payload = json.dumps(spec, ensure_ascii=False)
+    head = '<div class="fx-title">%s</div>' % esc(spec["title"]) if spec["title"] else ""
+    root = '<div class="fx-root math" data-tex="%s"></div>' % html.escape(spec["tex"], quote=True)
+    note = '<p class="fx-hint">点下面的胶囊，逐项拆到最底层。</p>'
+    return '<div class="fxl" data-fx="%s">%s%s%s</div>' % (
+        html.escape(payload, quote=True), head, root, note)
+
+
 def render_blocks(lines, ctx, sec_id):
     out = []
     i, n = 0, len(lines)
@@ -186,8 +304,33 @@ def render_blocks(lines, ctx, sec_id):
                 i += 1
             i += 1
             code = "\n".join(buf)
+            if lang == "math":
+                out.append('<div class="math" data-tex="%s"></div>' % html.escape(code.strip(), quote=True))
+                continue
+            if lang == "fx":
+                out.append(render_fx(code))
+                continue
             cls = ' class="lang-%s"' % esc(lang) if lang else ""
             out.append('<div class="codewrap"><pre><code%s>%s</code></pre></div>' % (cls, esc(code)))
+            continue
+
+        # 折叠块：<details> + <summary>（整个 build 只放行这一种原始 HTML）
+        if re.match(r"^<details>\s*$", s):
+            i += 1
+            summary = "详情"
+            while i < n and not lines[i].strip():
+                i += 1
+            m2 = re.match(r"^<summary>(.*?)</summary>\s*$", lines[i].strip())
+            if m2:
+                summary = m2.group(1).strip()
+                i += 1
+            inner = []
+            while i < n and lines[i].strip() != "</details>":
+                inner.append(lines[i])
+                i += 1
+            i += 1
+            out.append('<details class="fold"><summary>%s</summary><div class="foldbody">%s</div></details>'
+                       % (esc(summary), "".join(render_blocks(inner, ctx, sec_id))))
             continue
 
         # 分隔线
@@ -384,6 +527,11 @@ def main():
     total = sum(len(c["sections"]) for c in data)
 
     tpl = io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "shell.html"), encoding="utf-8").read()
+    katex_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "katex.min.js")
+    katex = io.open(katex_path, encoding="utf-8").read() if os.path.exists(katex_path) else ""
+    if not katex:
+        raise SystemExit("缺少 _site/katex.min.js")
+    tpl = tpl.replace("/*__KATEX__*/", katex)
     out = (tpl
            .replace("/*__DATA__*/[]", json.dumps(data, ensure_ascii=False, indent=1))
            .replace("__TOTAL__", str(total))

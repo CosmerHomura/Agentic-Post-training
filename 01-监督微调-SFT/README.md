@@ -8,7 +8,7 @@
 
 **把"一个更强的模型是怎样一步步解决任务"的完整录像，当成标准答案让它背下来。**
 
-这是整条后训练流水线的**第 1 步**，也是后面所有步骤的地基：没有 SFT，模型连"工具调用"的格式都不会写，RL 阶段根本无从采样。
+这是整条后训练流水线的**第 1 步**，也是后面所有步骤的地基：没有 SFT，模型连"工具调用"的格式都不会写，RL阶段根本无从采样。
 
 ---
 
@@ -138,7 +138,7 @@ JSONL 记录 ──chat template──► 一段纯文本 ──tokenizer──�
     ──打掩码──► labels（学的保留 id，不学的 -100）──collate──► batch 张量 ──► loss
 ```
 
-下面就按这个顺序，把 `python train_sft.py --inspect` 的真实输出贴出来（模型 `Qwen/Qwen3-0.6B`，数据 `data/sft_agent_trace.jsonl` 第 1 条）。**这些数字都可以在你自己机器上复现。**
+下面就按这个顺序，把 `python 01-监督微调-SFT/code/train_sft.py --inspect` 的真实输出贴出来（模型 `Qwen/Qwen3-0.6B`，数据 `data/sft_agent_trace.jsonl` 第 1 条）。**这些数字都可以在你自己机器上复现。**
 
 ### 5.1 阶段 1：读 JSONL
 
@@ -281,7 +281,7 @@ JSONL 记录 ──chat template──► 一段纯文本 ──tokenizer──�
 
 > 「哪些 token 是 assistant 的」这件事，transformers 靠模板里的 `{% generation %}…{% endgeneration %}` 标记来判断。
 > Qwen3 的模板**没有**这对标记——直接调 `return_assistant_tokens_mask=True` 会得到**全 0 的掩码**（外加一条 warning）。
-> TRL 的 `assistant_only_loss=True` 内部做的就是"给已知模型家族的模板打补丁"，脚本里 `patch_template()` 是同一个动作的最小实现。
+> TRL的 `assistant_only_loss=True` 内部做的就是"给已知模型家族的模板打补丁"，脚本里 `patch_template()` 是同一个动作的最小实现。
 
 ### 5.4 阶段 4：拼成 batch（模型真正看到的东西）
 
@@ -316,7 +316,7 @@ JSONL 记录 ──chat template──► 一段纯文本 ──tokenizer──�
 ## 6. 损失怎么算（手算一遍）
 
 第 5 节讲的是「数据变成了什么」，这一节讲「这些数字最后怎么变成一个 loss」。
-`python train_sft.py --explain-loss` 会把下面的表原样打印出来（不加载模型，1 秒跑完）。
+`python 01-监督微调-SFT/code/train_sft.py --explain-loss` 会把下面的表原样打印出来（不加载模型，1 秒跑完）。
 
 ### 6.1 一个位置：交叉熵就是「正确 token 概率的负对数」
 
@@ -337,6 +337,8 @@ JSONL 记录 ──chat template──► 一段纯文本 ──tokenizer──�
 
 这张表解释了 loss 的量级：SFT 正常的 loss 从 **2 左右降到 0.3 左右**，就是「正确 token 的平均概率从约 0.13 涨到约 0.74」。
 
+> 想从「熵 → 交叉熵 → KL」把这条线一次看全，见 [第 6 章 · 理论串联](../06-理论串联-从熵到GRPO/README.md)。
+
 ### 6.2 一条轨迹：166 个位置各算一次，再平均
 
 假设某条轨迹里 5 个被监督的 token，模型给它们的概率分别是：
@@ -351,11 +353,40 @@ JSONL 记录 ──chat template──► 一段纯文本 ──tokenizer──�
   平均 = (0.020+0.051+0.105+0.223+0.693)/5 = 0.218
 ```
 
-**只有这 5 个位置参与**。真实那条轨迹是 166 个位置，公式一样：
+**只有这 5 个位置参与**。真实那条轨迹是 166 个位置，写成人话公式就是：
 
+```fx
+title: SFT 的损失：一层层拆开
+tex: \mathcal{L}_{\text{SFT}} = -\frac{1}{|\mathcal{T}|}\sum_{t\in\mathcal{T}}\log p_\theta\left(y_t \mid y_{<t}\right)
+note: 整条轨迹上，模型给「正确 token」的概率越高，损失越小。
+1 @\mathcal{T} ¦ 监督位置集合 ¦ \mathcal{T}=\left\{\,t \;:\; \text{label}_t \neq -100\,\right\} ¦ 只有 assistant 自己写的 token 才进这个集合，prompt 和工具返回被 -100 屏蔽。
+1.1 @\text{label}_t ¦ 每个位置的标签 ¦ \text{label}_t = y_{t+1} ¦ 语言模型学的是「预测下一个 token」，所以标签是输入右移一位。
+1.2 @-100 ¦ PyTorch 的忽略标记 ¦ ¦ 交叉熵里 -100 的位置既不进分子也不进分母，等于没算。
+2 @|\mathcal{T}| ¦ 集合大小 ¦ ¦ 本例 166；忘了屏蔽 prompt 就变成 650，loss 会凭空小一半，看着像学得很好。
+3 @p_\theta\left(y_t \mid y_{<t}\right) ¦ 正确 token 的概率 ¦ p_\theta\left(y_t\mid y_{<t}\right)=\frac{\exp\left(z_{t,y_t}\right)}{\sum_{v=1}^{V}\exp\left(z_{t,v}\right)} ¦ softmax 之后，取「正确答案那个词」对应的那一格。
+3.1 @z_{t,v} ¦ logits ¦ z_{t,\cdot}=f_\theta\left(y_{<t}\right)\in\mathbb{R}^{V} ¦ 模型在每个位置吐 V 个分数，softmax 之前它们不是概率、也不为正。
+3.2 @V ¦ 词表大小 ¦ ¦ Qwen3 是 151936，所以一条 650 token 的轨迹，logits 是 650\times151936 个数。
+4 @\log\left(\cdot\right) ¦ 取对数 ¦ ¦ 把概率翻译成代价：p=1 时代价 0，p=0.5 时代价 0.693，p=0.01 时代价 4.6。
+5 @-\frac{1}{|\mathcal{T}|}\sum_{t\in\mathcal{T}} ¦ 先平均、再取负 ¦ ¦ 负号把「最小化损失」等价成「最大化正确 token 的概率」。
 ```
-  loss = (1 / 166) · Σ_{t ∈ 监督段} -ln p(token_t)
-```
+
+**逐符号拆解**（$\mathcal{T}$ 读作「脚本体 T」，就是被监督的位置集合）：
+
+| 符号 | 含义 | 本例取值 | 为什么是这个值 |
+|---|---|---|---|
+| $\mathcal{L}_{\text{SFT}}$ | 这条样本的损失，一个标量 | 0.218 | 5 个 token 的平均 |
+| $\mathcal{T}$ | 参与计算的位置集合 | 166 个位置 | prompt（提示词）和工具结果被掩码成 −100，剔除了 |
+| $\lvert\mathcal{T}\rvert$ | 集合大小，也就是分母 | 166 | **不是 650**（650 是序列长度） |
+| $p_\theta(y_t \mid y_{<t})$ | 模型在位置 t 对「正确 token」给出的概率 | 0.98 → 0.50 | softmax 之后取正确那一格 |
+| $-\log(\cdot)$ | 负对数，把概率翻译成损失 | 0.020 → 0.693 | 概率越低罚得越重 |
+
+**一步步算**（对应上面那 5 个 token）：
+
+1. **前向**：一次喂进 `[1, 650]` 的 `input_ids`，模型吐出 `[1, 650, 151936]` 的 logits（151936 = 词表大小）。
+2. **转概率**：对第 3 维做 softmax，每个位置变成一组 151936 个概率，加起来等于 1。
+3. **挑对的那一格**：只取「这条轨迹里真正写下的那个 token」的概率，得到 `0.98 / 0.95 / 0.90 / 0.80 / 0.50`。
+4. **逐个取负对数**：`−ln` 之后是 `0.020 / 0.051 / 0.105 / 0.223 / 0.693`。
+5. **求和再除以个数**：`1.092 / 5 = 0.218`；真实训练里分母是 166，而且这五步全在 GPU 上批量完成，不需要你写循环。
 
 分母是 **166 而不是 650** —— 这就是 5.3 节那张掩码条的真正作用。分母搞错（比如忘了 `assistant_only_loss`）会让 loss 数值凭空小一半，看着像「学得特别好」。
 
@@ -366,9 +397,9 @@ JSONL 记录 ──chat template──► 一段纯文本 ──tokenizer──�
 ```
   位置 0   输入 <|im_start|>       → 预测下一个：assistant
   位置 1   输入 assistant          → 预测下一个：换行
-  位置 2   输入 换行                → 预测下一个：先
-  位置 3   输入 先                  → 预测下一个：调
-  位置 4   输入 调                  → 预测下一个：用
+  位置 2   输入换行                → 预测下一个：先
+  位置 3   输入先                  → 预测下一个：调
+  位置 4   输入调                  → 预测下一个：用
 ```
 
 所以 `labels[t]` 就是 `input_ids[t+1]`，整条 label 序列等于「输入左移一位、末尾补 -100」：
@@ -406,7 +437,7 @@ JSONL 记录 ──chat template──► 一段纯文本 ──tokenizer──�
 
 ## 7. 跑起来
 
-脚本：[`code/train_sft.py`](code/train_sft.py)（约 660 行，四个阶段 + 训练前/后评测全部可打印）
+脚本目录：[`code/`](code/)（7 个文件，入口 `train_sft.py`，四个阶段 + 训练前/后评测全部可打印）
 
 ### 7.1 两套数据，别混用
 
@@ -419,27 +450,32 @@ JSONL 记录 ──chat template──► 一段纯文本 ──tokenizer──�
 第 5 节那些数字（650 token / 166 监督 / 24.4%）都来自解剖样本，它的作用是让你**看清数据处理**，不是让你相信训练有效。
 要看效果，就得用官方数据集或者你自己采集的上千条轨迹。
 
+> **Capybara 没有工具定义**：它是通用对话数据（只有 `messages` 列，user/assistant 交替），所以跑起来会看到「这条没有工具定义」的提示——正常。
+> 它的价值是先验证「管线 + 效果评估」这条链能跑通；要真练工具调用，就把你采集的 agent 轨迹按第 4 节的 JSONL 格式写好，用 `--data` 指过去（带 `tools` 列和 `tool_calls`）。
+
 ### 7.2 命令
 
-```bash
-cd 01-监督微调-SFT/code
+**所有命令都在仓库根目录执行**（`Agentic-Post-training/` 那个目录，不需要 cd 进 `code/`）。
 
+```bash
 # (1) 只跑数据链路：不需要 GPU、不需要 trl（只要 transformers），先确认数据没写错
-python train_sft.py --inspect
+python 01-监督微调-SFT/code/train_sft.py --inspect
 
 # (1).5 不加载模型，把第 6 节的交叉熵手算打一遍
-python train_sft.py --explain-loss
+python 01-监督微调-SFT/code/train_sft.py --explain-loss
 
 # (2) 用本地 2 条解剖样本跑通全流程（验证管线，不代表效果）
-python train_sft.py --epochs 1 --max-steps 20
+python 01-监督微调-SFT/code/train_sft.py --epochs 1 --max-steps 20
 
 # (3) 真正训练：官方数据集 2000 条，留 100 条做 held-out 评测
-python train_sft.py --dataset trl-lib/Capybara --limit 2000 --eval-size 100
+python 01-监督微调-SFT/code/train_sft.py --dataset trl-lib/Capybara --limit 2000 --eval-size 100
 
 # 单卡 24G 的稳妥配置
-python train_sft.py --dataset trl-lib/Capybara --limit 5000 --eval-size 100 \
-    --model Qwen/Qwen3-0.6B --epochs 1 --gen-tokens 160
+python 01-监督微调-SFT/code/train_sft.py --dataset trl-lib/Capybara --limit 5000 \
+    --eval-size 100 --model Qwen/Qwen3-0.6B --epochs 1 --gen-tokens 160
 ```
+
+路径不受影响：脚本自己用 `Path(__file__).resolve().parents[2]` 找到仓库根，产物照样落在 `runs/sft/` 和 `ckpt/sft-agent/`。
 
 `--limit` 取多少？先 2000 条跑通（约 20–40 分钟），确认 -ln p 在降，再加到 5000–20000。
 
@@ -449,6 +485,20 @@ python train_sft.py --dataset trl-lib/Capybara --limit 5000 --eval-size 100 \
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
   "trl>=1.16.0" transformers datasets accelerate
 ```
+
+#### 代码不是一个 600 行的文件
+
+| 文件 | 负责什么 |
+|---|---|
+| `code/train_sft.py` | 入口：解析参数、按顺序调用下面这些 |
+| `code/common.py` | 仓库根路径、`runs/`·`ckpt/` 目录、打印、tokenizer 小工具 |
+| `code/sft_data.py` | 阶段 1：读 JSONL / 官方数据集、切 held-out |
+| `code/sft_template.py` | 阶段 2~4：套模板、打 generation 补丁、算掩码、看 batch |
+| `code/sft_trainer.py` | 阶段 5：SFTTrainer + 训练前后各测一次 |
+| `code/sft_report.py` | ASCII 损失图 + `runs/sft/report.md` |
+| `code/sft_loss.py` | 第 6 节那张交叉熵表（`--explain-loss`） |
+
+想改哪一段就只改那一个文件，入口文件基本不用动。
 
 | 产物 | 内容 |
 |---|---|
@@ -609,7 +659,7 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ## 11. 练习与自测
 
-1. **看掩码**：跑 `python train_sft.py --inspect`，打开 `runs/sft/tokens.txt`，找到第 4 条消息（`tool_response`）——确认它的每一行都是 `0`。再找到最后一条 assistant 的 `<think>`——确认它被监督了。
+1. **看掩码**：跑 `python 01-监督微调-SFT/code/train_sft.py --inspect`，打开 `runs/sft/tokens.txt`，找到第 4 条消息（`tool_response`）——确认它的每一行都是 `0`。再找到最后一条 assistant 的 `<think>`——确认它被监督了。
 2. **改数据**：加第 3 条轨迹，让它**先跑测试看到报错、再读文件**（顺序与现有样例相反），重跑，看掩码条的形状有没有变、模型有没有学到这个顺序。
 3. **对照实验**：把 `assistant_only_loss=True` 改成 `False` 再训一次，用同一个 prompt 推理——你应该能直观看到"复述用户问题"的现象。
 4. **算比例**：把 `--epochs` 从 3 改成 1，比较 `num_tokens` 与 `166 × 2 × epoch`，确认你真的只学了该学的部分。
