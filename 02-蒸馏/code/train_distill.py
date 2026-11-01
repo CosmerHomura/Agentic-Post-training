@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import argparse
 
-from common import safe_run, LOCAL_JSONL, STUDENT, TEACHER, print_env
+from common import safe_run, LOCAL_JSONL, STUDENT, TEACHER, print_env, RUN_DIR
 from distill_data import load_prompts, stage_read
 from distill_loss import explain_loss
 from distill_probe import probe_kl, stage_distributions, stage_generate

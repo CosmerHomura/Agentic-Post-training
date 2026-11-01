@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import argparse
 
-from common import safe_run, LOCAL_JSONL, MODEL_DEFAULT, print_env
+from common import safe_run, LOCAL_JSONL, MODEL_DEFAULT, print_env, RUN_DIR
 from grpo_data import load_rows, stage_read
 from grpo_loss import explain_loss
 from grpo_report import write_report
